@@ -53,8 +53,16 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 
+def poincare_project(v, eps=1e-5):
+    norm = v.norm(dim=-1, keepdim=True)
+    clipped_norm = torch.clamp(norm, max=5.0)
+    proj = torch.tanh(clipped_norm) * (v / torch.clamp(norm, min=eps))
+    proj_norm = proj.norm(dim=-1, keepdim=True)
+    proj = torch.where(proj_norm >= 1.0 - 1e-4, proj * ((1.0 - 1e-4) / (proj_norm + eps)), proj)
+    return proj
+
 class Attention(nn.Module):
-    """Scaled dot-product attention with causal masking"""
+    """Hyperbolic attention with causal masking"""
 
     def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
@@ -80,7 +88,49 @@ class Attention(nn.Module):
         drop = self.dropout if self.training else 0.0
         qkv = self.to_qkv(x).chunk(3, dim=-1)  # q, k, v: (B, heads, T, dim_head)
         q, k, v = (rearrange(t, "b t (h d) -> b h t d", h=self.heads) for t in qkv)
-        out = F.scaled_dot_product_attention(q, k, v, dropout_p=drop, is_causal=causal)
+
+        # 1. Project to Poincaré ball
+        q_proj = poincare_project(q)
+        k_proj = poincare_project(k)
+        v_proj = poincare_project(v)
+
+        # 2. Pairwise hyperbolic distance squared
+        q_sq = q_proj.pow(2).sum(-1, keepdim=True)  # (B, h, T, 1)
+        k_sq = k_proj.pow(2).sum(-1, keepdim=True).transpose(-2, -1)  # (B, h, 1, T)
+
+        # (q - k)^2 = q^2 + k^2 - 2 q.k
+        diff_sq = q_sq + k_sq - 2.0 * torch.matmul(q_proj, k_proj.transpose(-2, -1))
+        diff_sq = torch.clamp(diff_sq, min=0.0)
+
+        denom = (1.0 - q_sq) * (1.0 - k_sq)
+        denom = torch.clamp(denom, min=1e-5)
+
+        val = 1.0 + 2.0 * diff_sq / denom
+        val = torch.clamp(val, min=1.0 + 1e-5)
+        dist = torch.log(val + torch.sqrt(val.pow(2) - 1.0))
+        dist_sq = dist.pow(2)
+
+        # 3. Attention logits
+        logits = -dist_sq
+
+        # Causal masking
+        if causal:
+            device = val.device
+            T_q, T_k = q.size(-2), k.size(-2)
+            mask = torch.triu(torch.ones(T_q, T_k, device=device), diagonal=1).bool()
+            logits = logits.masked_fill(mask, -1e9)
+
+        attn_weights = F.softmax(logits, dim=-1)
+        if self.training and drop > 0.0:
+            attn_weights = F.dropout(attn_weights, p=drop)
+
+        # 4. Conformal factor weighted aggregation (Möbius gyromidpoint approximation)
+        lambda_v = 2.0 / torch.clamp(1.0 - v_proj.pow(2).sum(-1, keepdim=True), min=1e-5)
+        numerator = torch.matmul(attn_weights, lambda_v * v_proj)
+        denominator = torch.matmul(attn_weights, lambda_v)
+        agg_euclidean = numerator / torch.clamp(denominator, min=1e-5)
+        out = poincare_project(agg_euclidean)
+
         out = rearrange(out, "b h t d -> b t (h d)")
         return self.to_out(out)
 
