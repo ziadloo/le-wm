@@ -186,6 +186,14 @@ class Transformer(nn.Module):
             x = self.output_proj(x)
         return x
 
+def poincare_project(v, eps=1e-5):
+    norm = v.norm(dim=-1, keepdim=True)
+    clipped_norm = torch.clamp(norm, max=5.0)
+    proj = torch.tanh(clipped_norm) * (v / torch.clamp(norm, min=eps))
+    proj_norm = proj.norm(dim=-1, keepdim=True)
+    proj = torch.where(proj_norm >= 1.0 - 1e-4, proj * ((1.0 - 1e-4) / (proj_norm + eps)), proj)
+    return proj
+
 class Embedder(nn.Module):
     def __init__(
         self,
@@ -211,6 +219,7 @@ class Embedder(nn.Module):
         x = self.patch_embed(x)
         x = x.permute(0, 2, 1)
         x = self.embed(x)
+        x = poincare_project(x)
         return x
 
 
