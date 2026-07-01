@@ -8,6 +8,30 @@ from torch import nn
 def detach_clone(v):
     return v.detach().clone() if torch.is_tensor(v) else v
 
+def poincare_project_c(v, c, eps=1e-5):
+    c_val = torch.clamp(c, min=1e-3)
+    norm = v.norm(dim=-1, keepdim=True)
+    sqrt_c = torch.sqrt(c_val)
+    clipped_norm = torch.clamp(norm * sqrt_c, max=5.0)
+    proj = torch.tanh(clipped_norm) * (v / torch.clamp(norm * sqrt_c, min=eps))
+    proj_norm = proj.norm(dim=-1, keepdim=True)
+    max_radius = (1.0 - 1e-4) / sqrt_c
+    proj = torch.where(proj_norm >= max_radius, proj * (max_radius / (proj_norm + eps)), proj)
+    return proj
+
+def poincare_distance_c(u, v, c, eps=1e-5):
+    c_val = torch.clamp(c, min=1e-3)
+    u_sq = u.pow(2).sum(-1)
+    v_sq = v.pow(2).sum(-1)
+    diff_sq = (u - v).pow(2).sum(-1)
+    denom = (1.0 - c_val * u_sq) * (1.0 - c_val * v_sq)
+    denom = torch.clamp(denom, min=eps)
+    x = 1.0 + 2.0 * c_val * diff_sq / denom
+    x = torch.clamp(x, min=1.0 + eps)
+    sqrt_c = torch.sqrt(c_val)
+    arcosh = torch.log(x + torch.sqrt(x.pow(2) - 1.0))
+    return arcosh / sqrt_c
+
 class JEPA(nn.Module):
 
     def __init__(
@@ -25,6 +49,7 @@ class JEPA(nn.Module):
         self.action_encoder = action_encoder
         self.projector = projector or nn.Identity()
         self.pred_proj = pred_proj or nn.Identity()
+        self.c = nn.Parameter(torch.tensor([1.0]))
 
     def encode(self, info):
         """Encode observations and actions into embeddings.
@@ -37,6 +62,7 @@ class JEPA(nn.Module):
         output = self.encoder(pixels, interpolate_pos_encoding=True)
         pixels_emb = output.last_hidden_state[:, 0]  # cls token
         emb = self.projector(pixels_emb)
+        emb = poincare_project_c(emb, self.c)
         info["emb"] = rearrange(emb, "(b t) d -> b t d", b=b)
 
         if "action" in info:
@@ -51,6 +77,7 @@ class JEPA(nn.Module):
         """
         preds = self.predictor(emb, act_emb)
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))
+        preds = poincare_project_c(preds, self.c)
         preds = rearrange(preds, "(b t) d -> b t d", b=emb.size(0))
         return preds
 
@@ -116,12 +143,9 @@ class JEPA(nn.Module):
 
         goal_emb = goal_emb[..., -1:, :].expand_as(pred_emb)
 
-        # return last-step cost per action candidate
-        cost = F.mse_loss(
-            pred_emb[..., -1:, :],
-            goal_emb[..., -1:, :].detach(),
-            reduction="none",
-        ).sum(dim=tuple(range(2, pred_emb.ndim)))  # (B, S)
+        # return last-step cost per action candidate using trainable curvature poincare distance
+        dist = poincare_distance_c(pred_emb[..., -1:, :], goal_emb[..., -1:, :].detach(), self.c)
+        cost = dist.pow(2).sum(dim=tuple(range(2, dist.ndim)))
 
         return cost
 
