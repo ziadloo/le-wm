@@ -14,6 +14,8 @@ from module import SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 
 
+from jepa import poincare_distance, poincare_log_origin
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
@@ -35,9 +37,10 @@ def lejepa_forward(self, batch, stage, cfg):
     tgt_emb = emb[:, n_preds:] # label
     pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
 
-    # LeWM loss
-    output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
-    output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
+    # LeWM loss using poincare distance squared
+    output["pred_loss"] = poincare_distance(pred_emb, tgt_emb).pow(2).mean()
+    # Map to tangent space at the origin before computing SIGReg
+    output["sigreg_loss"]= self.sigreg(poincare_log_origin(emb).transpose(0, 1))
     output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}

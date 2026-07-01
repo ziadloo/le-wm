@@ -8,6 +8,30 @@ from torch import nn
 def detach_clone(v):
     return v.detach().clone() if torch.is_tensor(v) else v
 
+def poincare_project(v, eps=1e-5):
+    norm = v.norm(dim=-1, keepdim=True)
+    clipped_norm = torch.clamp(norm, max=5.0)
+    proj = torch.tanh(clipped_norm) * (v / torch.clamp(norm, min=eps))
+    proj_norm = proj.norm(dim=-1, keepdim=True)
+    proj = torch.where(proj_norm >= 1.0 - 1e-4, proj * ((1.0 - 1e-4) / (proj_norm + eps)), proj)
+    return proj
+
+def poincare_distance(u, v, eps=1e-5):
+    u_sq = u.pow(2).sum(-1)
+    v_sq = v.pow(2).sum(-1)
+    diff_sq = (u - v).pow(2).sum(-1)
+    denom = (1.0 - u_sq) * (1.0 - v_sq)
+    denom = torch.clamp(denom, min=eps)
+    x = 1.0 + 2.0 * diff_sq / denom
+    x = torch.clamp(x, min=1.0 + eps)
+    return torch.log(x + torch.sqrt(x.pow(2) - 1.0))
+
+def poincare_log_origin(z, eps=1e-5):
+    norm = z.norm(dim=-1, keepdim=True)
+    norm_clamped = torch.clamp(norm, min=eps, max=1.0 - 1e-4)
+    arctanh = 0.5 * torch.log((1.0 + norm_clamped) / (1.0 - norm_clamped))
+    return arctanh * (z / torch.clamp(norm, min=eps))
+
 class JEPA(nn.Module):
 
     def __init__(
@@ -37,6 +61,7 @@ class JEPA(nn.Module):
         output = self.encoder(pixels, interpolate_pos_encoding=True)
         pixels_emb = output.last_hidden_state[:, 0]  # cls token
         emb = self.projector(pixels_emb)
+        emb = poincare_project(emb)
         info["emb"] = rearrange(emb, "(b t) d -> b t d", b=b)
 
         if "action" in info:
@@ -51,6 +76,7 @@ class JEPA(nn.Module):
         """
         preds = self.predictor(emb, act_emb)
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))
+        preds = poincare_project(preds)
         preds = rearrange(preds, "(b t) d -> b t d", b=emb.size(0))
         return preds
 
@@ -116,12 +142,9 @@ class JEPA(nn.Module):
 
         goal_emb = goal_emb[..., -1:, :].expand_as(pred_emb)
 
-        # return last-step cost per action candidate
-        cost = F.mse_loss(
-            pred_emb[..., -1:, :],
-            goal_emb[..., -1:, :].detach(),
-            reduction="none",
-        ).sum(dim=tuple(range(2, pred_emb.ndim)))  # (B, S)
+        # return last-step cost per action candidate using poincare distance squared
+        dist = poincare_distance(pred_emb[..., -1:, :], goal_emb[..., -1:, :].detach())
+        cost = dist.pow(2).sum(dim=tuple(range(2, dist.ndim)))
 
         return cost
 
