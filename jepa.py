@@ -8,6 +8,22 @@ from torch import nn
 def detach_clone(v):
     return v.detach().clone() if torch.is_tensor(v) else v
 
+def lorentz_project(v):
+    spatial = v[..., :-1]
+    norm_sq = spatial.pow(2).sum(-1, keepdim=True)
+    t = torch.sqrt(1.0 + norm_sq)
+    return torch.cat([t, spatial], dim=-1)
+
+def lorentz_inner_product(u, v):
+    t_part = -u[..., :1] * v[..., :1]
+    spatial_part = (u[..., 1:] * v[..., 1:]).sum(-1, keepdim=True)
+    return t_part + spatial_part
+
+def lorentz_distance(u, v, eps=1e-5):
+    ip = lorentz_inner_product(u, v)
+    x = torch.clamp(-ip, min=1.0 + eps)
+    return torch.log(x + torch.sqrt(x.pow(2) - 1.0)).squeeze(-1)
+
 class JEPA(nn.Module):
 
     def __init__(
@@ -37,6 +53,7 @@ class JEPA(nn.Module):
         output = self.encoder(pixels, interpolate_pos_encoding=True)
         pixels_emb = output.last_hidden_state[:, 0]  # cls token
         emb = self.projector(pixels_emb)
+        emb = lorentz_project(emb)
         info["emb"] = rearrange(emb, "(b t) d -> b t d", b=b)
 
         if "action" in info:
@@ -51,6 +68,7 @@ class JEPA(nn.Module):
         """
         preds = self.predictor(emb, act_emb)
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))
+        preds = lorentz_project(preds)
         preds = rearrange(preds, "(b t) d -> b t d", b=emb.size(0))
         return preds
 
@@ -116,12 +134,9 @@ class JEPA(nn.Module):
 
         goal_emb = goal_emb[..., -1:, :].expand_as(pred_emb)
 
-        # return last-step cost per action candidate
-        cost = F.mse_loss(
-            pred_emb[..., -1:, :],
-            goal_emb[..., -1:, :].detach(),
-            reduction="none",
-        ).sum(dim=tuple(range(2, pred_emb.ndim)))  # (B, S)
+        # return last-step cost per action candidate using lorentz distance squared
+        dist = lorentz_distance(pred_emb[..., -1:, :], goal_emb[..., -1:, :].detach())
+        cost = dist.pow(2).sum(dim=tuple(range(2, dist.ndim)))
 
         return cost
 
