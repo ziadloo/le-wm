@@ -99,13 +99,12 @@ def run(cfg):
     with open_dict(cfg):
         cfg.merge_with(cfg_dict)
 
+    # Sync and update ClearML's Configuration tab named "OmegaConf" to reflect the actual resolved/merged config
+    task.connect_configuration(OmegaConf.to_yaml(cfg), name="OmegaConf")
+
     # Extract dataset options
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
-    # Append new tags while preserving any enqueued preset tags
-    existing_tags = task.get_tags() or []
-    task.set_tags(list(set(existing_tags + ["base-experiment", f"data:{dataset_name}"])))
-
     clearml_id = dataset_cfg.pop("clearml_id", None)
     clearml_name = dataset_cfg.pop("clearml_name", None)
     clearml_project = dataset_cfg.pop("clearml_project", "LeWM")
