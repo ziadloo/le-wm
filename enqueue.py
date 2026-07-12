@@ -29,7 +29,7 @@ DEFAULT_EVAL_PACKAGES = DEFAULT_TRAIN_PACKAGES + ["imageio-ffmpeg"]
 
 # Presets map to decouple target task details from conditional structures
 PRESETS = {
-    "baseline_tworoom": {
+    "tworoom": {
         "project_name": "LeWM/Training",
         "task_name": "LeWM-Train-tworoom-sigreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
@@ -43,17 +43,17 @@ PRESETS = {
             "trainer.max_epochs": 20,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
-            "loader.batch_size": 64,
+            "loader.batch_size": 144,
             "num_workers": 4,
             "loader.prefetch_factor": 2,
             "compile": True,
-            "trainer.limit_train_batches": 10,  # Limits training steps per epoch
-            "trainer.limit_val_batches": 2,     # Limits validation steps per epoch
+            # "trainer.limit_train_batches": 10,  # Limits training steps per epoch
+            # "trainer.limit_val_batches": 2,     # Limits validation steps per epoch
         },
         "tags": ["baseline", "tworoom", "lance", "bf16-mixed", "sigreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
-    "baseline_reacher": {
+    "reacher": {
         "project_name": "LeWM/Training",
         "task_name": "LeWM-Train-reacher-sigreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
@@ -75,7 +75,7 @@ PRESETS = {
         "tags": ["baseline", "reacher", "lance", "bf16-mixed", "sigreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
-    "baseline_cube": {
+    "cube": {
         "project_name": "LeWM/Training",
         "task_name": "LeWM-Train-cube_single-sigreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
@@ -104,7 +104,7 @@ PRESETS = {
         "script": "train.py",
         "argparse_args": [("data", "pusht_lance")],
         "config_path": "config/train/lewm.yaml",
-        "data_config_path": "config/train/data/pusht_lance.yaml",
+        "data_config_path": "config/train/data/pusht.yaml",
         "dataset_name": "pusht_expert_train.lance",
         "clearml_dataset_name": "LeWM-PushT",
         "overrides": {
