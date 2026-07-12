@@ -40,7 +40,7 @@ PRESETS = {
         "dataset_name": "tworoom.lance",
         "clearml_dataset_name": "LeWM-TwoRoom",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
@@ -64,7 +64,7 @@ PRESETS = {
         "dataset_name": "reacher.lance",
         "clearml_dataset_name": "LeWM-Reacher",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
@@ -86,7 +86,7 @@ PRESETS = {
         "dataset_name": "ogbench/cube_single_expert.lance",
         "clearml_dataset_name": "LeWM-Cube",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
@@ -108,7 +108,7 @@ PRESETS = {
         "dataset_name": "pusht_expert_train.lance",
         "clearml_dataset_name": "LeWM-PushT",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
