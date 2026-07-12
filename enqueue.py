@@ -31,7 +31,7 @@ DEFAULT_EVAL_PACKAGES = DEFAULT_TRAIN_PACKAGES + ["imageio-ffmpeg"]
 PRESETS = {
     "baseline_tworoom": {
         "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-tworoom-sigreg-bf16_true",
+        "task_name": "LeWM-Train-tworoom-sigreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "tworoom")],
@@ -42,18 +42,20 @@ PRESETS = {
         "overrides": {
             "trainer.max_epochs": 20,
             "scheduler_max_epochs": 100,
-            "trainer.precision": "bf16-true",
+            "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
             "num_workers": 4,
             "loader.prefetch_factor": 2,
             "compile": True,
+            "trainer.limit_train_batches": 10,  # Limits training steps per epoch
+            "trainer.limit_val_batches": 2,     # Limits validation steps per epoch
         },
-        "tags": ["baseline", "enqueued", "tworoom", "lance-format", "bf16-true", "data:tworoom.lance"],
+        "tags": ["baseline", "tworoom", "lance", "bf16-mixed", "sigreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
     "baseline_reacher": {
         "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-reacher-sigreg-bf16_true",
+        "task_name": "LeWM-Train-reacher-sigreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "dmc")],
@@ -64,18 +66,18 @@ PRESETS = {
         "overrides": {
             "trainer.max_epochs": 20,
             "scheduler_max_epochs": 100,
-            "trainer.precision": "bf16-true",
+            "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
             "num_workers": 4,
             "loader.prefetch_factor": 2,
             "compile": True,
         },
-        "tags": ["baseline", "enqueued", "reacher", "lance-format", "bf16-true", "data:reacher.lance"],
+        "tags": ["baseline", "reacher", "lance", "bf16-mixed", "sigreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
     "baseline_cube": {
         "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-cube_single-sigreg-bf16_true",
+        "task_name": "LeWM-Train-cube_single-sigreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "ogb")],
@@ -86,62 +88,18 @@ PRESETS = {
         "overrides": {
             "trainer.max_epochs": 20,
             "scheduler_max_epochs": 100,
-            "trainer.precision": "bf16-true",
+            "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
             "num_workers": 4,
             "loader.prefetch_factor": 2,
             "compile": True,
         },
-        "tags": ["baseline", "enqueued", "cube_single", "lance-format", "bf16-true", "data:ogbench/cube_single_expert.lance"],
+        "tags": ["baseline", "cube_single", "lance", "bf16-mixed", "sigreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
-    "pusht_lance": {
+    "pusht": {
         "project_name": "LeWM/Training",
         "task_name": "LeWM-Train-pusht_lance-sigreg-bf16_mixed",
-        "task_type": Task.TaskTypes.training,
-        "script": "train.py",
-        "argparse_args": [("data", "pusht_lance")],
-        "config_path": "config/train/lewm.yaml",
-        "data_config_path": "config/train/data/pusht_lance.yaml",
-        "dataset_name": "pusht_expert_train.lance",
-        "clearml_dataset_name": "LeWM-PushT",
-        "overrides": {
-            "trainer.max_epochs": 20,
-            "scheduler_max_epochs": 100,
-            "trainer.precision": "bf16",
-            "loader.batch_size": 144,
-            "loader.prefetch_factor": 2,
-            "num_workers": 4,
-            "compile": True,
-        },
-        "tags": ["base-experiment", "bf16-mixed", "lance", "pusht", "sigreg"],
-        "packages": DEFAULT_TRAIN_PACKAGES
-    },
-    "pusht_amp": {
-        "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-pusht-sigreg-bf16_true",
-        "task_type": Task.TaskTypes.training,
-        "script": "train.py",
-        "argparse_args": [("data", "pusht")],
-        "config_path": "config/train/lewm.yaml",
-        "data_config_path": "config/train/data/pusht.yaml",
-        "dataset_name": "pusht_expert_train.lance",
-        "clearml_dataset_name": "LeWM-PushT",
-        "overrides": {
-            "trainer.max_epochs": 20,
-            "scheduler_max_epochs": 100,
-            "trainer.precision": "bf16-true",
-            "loader.batch_size": 144,
-            "loader.prefetch_factor": 2,
-            "num_workers": 4,
-            "compile": True,
-        },
-        "tags": ["base-experiment", "bf16-true", "lance", "pusht", "sigreg"],
-        "packages": DEFAULT_TRAIN_PACKAGES
-    },
-    "pusht_vicreg": {
-        "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-pusht_lance-vicreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "pusht_lance")],
@@ -158,32 +116,9 @@ PRESETS = {
             "num_workers": 4,
             "compile": True,
         },
-        "tags": ["enqueued", "agent-worker", "lance-format", "vicreg", "bf16-mixed", "data:pusht_expert_train.lance"],
+        "tags": ["baseline", "pusht", "lance", "bf16-mixed", "sigreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
-    "pusht_visreg": {
-        "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-pusht_lance-visreg_w5.0-bf16_mixed",
-        "task_type": Task.TaskTypes.training,
-        "script": "train.py",
-        "argparse_args": [("data", "pusht_lance")],
-        "config_path": "config/train/lewm.yaml",
-        "data_config_path": "config/train/data/pusht_lance.yaml",
-        "dataset_name": "pusht_expert_train.lance",
-        "clearml_dataset_name": "LeWM-PushT",
-        "overrides": {
-            "trainer.max_epochs": 20,
-            "scheduler_max_epochs": 100,
-            "trainer.precision": "bf16",
-            "loader.batch_size": 144,
-            "loader.prefetch_factor": 2,
-            "num_workers": 4,
-            "compile": True,
-            "loss.visreg.weight": 5.0,
-        },
-        "tags": ["enqueued", "agent-worker", "lance-format", "visreg_w5.0", "bf16-mixed", "data:pusht_expert_train.lance"],
-        "packages": DEFAULT_TRAIN_PACKAGES
-    }
 }
 
 def load_and_merge_configs(config_path, data_config_path=None, overrides=None):
@@ -243,15 +178,23 @@ def enqueue_task(task_spec, queue_name="default"):
     print(f"🔗 ClearML Task Link: {task.get_output_log_web_page()}\n")
     return task.id
 
-def handle_preset_mode(preset_name, queue_name):
+def handle_preset_mode(preset_name, queue_name, precision=None):
     """Handles execution of one or multiple preset tasks using a dictionary lookup."""
     if preset_name == "all_baselines":
         # Launch baseline training targets
         targets = ["baseline_tworoom", "baseline_reacher", "baseline_cube"]
         for target in targets:
-            enqueue_task(PRESETS[target], queue_name)
+            spec = PRESETS[target].copy()
+            if precision:
+                spec["overrides"] = spec.get("overrides", {}).copy()
+                spec["overrides"]["trainer.precision"] = precision
+            enqueue_task(spec, queue_name)
     elif preset_name in PRESETS:
-        enqueue_task(PRESETS[preset_name], queue_name)
+        spec = PRESETS[preset_name].copy()
+        if precision:
+            spec["overrides"] = spec.get("overrides", {}).copy()
+            spec["overrides"]["trainer.precision"] = precision
+        enqueue_task(spec, queue_name)
     else:
         print(f"❌ Error: Preset '{preset_name}' not found. Available presets: {list(PRESETS.keys())} or 'all_baselines'.")
         sys.exit(1)
@@ -359,12 +302,14 @@ def main():
                         help="ClearML task ID of the training job to evaluate (required in evaluate_job mode).")
     parser.add_argument("--queue", default="default",
                         help="Target queue for execution (default: 'default').")
+    parser.add_argument("--precision",
+                        help="Override numerical precision (data type) for training presets (e.g. '32' or '32-true' for FP32).")
                         
     args = parser.parse_args()
     
     # Command Pattern mapping to dispatch modes without complex conditional nesting
     dispatch = {
-        "preset": lambda: handle_preset_mode(args.preset, args.queue),
+        "preset": lambda: handle_preset_mode(args.preset, args.queue, precision=args.precision),
         "eval": lambda: [handle_eval_checkpoint(f"lewm/weights_epoch_{epoch}.pt", args.queue) for epoch in range(1, 101)] if args.all_epochs else handle_eval_checkpoint(args.checkpoint, args.queue),
         "evaluate_job": lambda: handle_evaluate_job(args.job_id, args.queue)
     }

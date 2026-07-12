@@ -27,7 +27,7 @@ class SIGReg(torch.nn.Module):
         proj: (T, B, D)
         """
         # sample random projections
-        A = torch.randn(proj.size(-1), self.num_proj, device=proj.device)
+        A = torch.randn(proj.size(-1), self.num_proj, device=proj.device, dtype=proj.dtype)
         A = A.div_(A.norm(p=2, dim=0))
         # compute the epps-pulley statistic
         x_t = (proj @ A).unsqueeze(-1) * self.t
