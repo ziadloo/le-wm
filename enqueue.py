@@ -31,7 +31,7 @@ DEFAULT_EVAL_PACKAGES = DEFAULT_TRAIN_PACKAGES + ["imageio-ffmpeg"]
 PRESETS = {
     "tworoom": {
         "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-tworoom-sigreg-bf16_mixed",
+        "task_name": "LeWM-Train-tworoom-visreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "tworoom")],
@@ -40,7 +40,7 @@ PRESETS = {
         "dataset_name": "tworoom.lance",
         "clearml_dataset_name": "LeWM-TwoRoom",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
@@ -50,12 +50,12 @@ PRESETS = {
             # "trainer.limit_train_batches": 10,  # Limits training steps per epoch
             # "trainer.limit_val_batches": 2,     # Limits validation steps per epoch
         },
-        "tags": ["baseline", "tworoom", "lance", "bf16-mixed", "sigreg"],
+        "tags": ["baseline", "tworoom", "lance", "bf16-mixed", "visreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
     "reacher": {
         "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-reacher-sigreg-bf16_mixed",
+        "task_name": "LeWM-Train-reacher-visreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "dmc")],
@@ -64,7 +64,7 @@ PRESETS = {
         "dataset_name": "reacher.lance",
         "clearml_dataset_name": "LeWM-Reacher",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
@@ -72,12 +72,12 @@ PRESETS = {
             "loader.prefetch_factor": 2,
             "compile": True,
         },
-        "tags": ["baseline", "reacher", "lance", "bf16-mixed", "sigreg"],
+        "tags": ["baseline", "reacher", "lance", "bf16-mixed", "visreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
     "cube": {
         "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-cube_single-sigreg-bf16_mixed",
+        "task_name": "LeWM-Train-cube_single-visreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "ogb")],
@@ -86,7 +86,7 @@ PRESETS = {
         "dataset_name": "ogbench/cube_single_expert.lance",
         "clearml_dataset_name": "LeWM-Cube",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
@@ -94,12 +94,12 @@ PRESETS = {
             "loader.prefetch_factor": 2,
             "compile": True,
         },
-        "tags": ["baseline", "cube_single", "lance", "bf16-mixed", "sigreg"],
+        "tags": ["baseline", "cube_single", "lance", "bf16-mixed", "visreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
     "pusht": {
         "project_name": "LeWM/Training",
-        "task_name": "LeWM-Train-pusht_lance-sigreg-bf16_mixed",
+        "task_name": "LeWM-Train-pusht_lance-visreg-bf16_mixed",
         "task_type": Task.TaskTypes.training,
         "script": "train.py",
         "argparse_args": [("data", "pusht_lance")],
@@ -108,7 +108,7 @@ PRESETS = {
         "dataset_name": "pusht_expert_train.lance",
         "clearml_dataset_name": "LeWM-PushT",
         "overrides": {
-            "trainer.max_epochs": 20,
+            "trainer.max_epochs": 10,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
             "loader.batch_size": 144,
@@ -116,7 +116,7 @@ PRESETS = {
             "num_workers": 4,
             "compile": True,
         },
-        "tags": ["baseline", "pusht", "lance", "bf16-mixed", "sigreg"],
+        "tags": ["baseline", "pusht", "lance", "bf16-mixed", "visreg"],
         "packages": DEFAULT_TRAIN_PACKAGES
     },
 }
