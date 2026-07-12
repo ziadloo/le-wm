@@ -87,7 +87,7 @@ def run(cfg):
         project_name="LeWM/Training",
         task_name=f"LeWM-Train-{cfg.output_model_name}",
         task_type=Task.TaskTypes.training,
-        auto_connect_frameworks={"pytorch": False},
+        auto_connect_frameworks={"pytorch": False, "hydra": False},
         output_uri=True
     )
 
@@ -105,6 +105,11 @@ def run(cfg):
     # Extract dataset options
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
+
+    # Append new tags while preserving any enqueued preset tags
+    existing_tags = task.get_tags() or []
+    task.set_tags(list(set(existing_tags + ["base-experiment", f"data:{dataset_name}"])))
+
     clearml_id = dataset_cfg.pop("clearml_id", None)
     clearml_name = dataset_cfg.pop("clearml_name", None)
     clearml_project = dataset_cfg.pop("clearml_project", "LeWM")

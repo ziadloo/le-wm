@@ -169,7 +169,7 @@ def run(cfg: DictConfig):
         project_name="LeWM/Evaluation",
         task_name=f"LeWM-Eval-{cfg.eval.dataset_name}",
         task_type=Task.TaskTypes.testing,
-        auto_connect_frameworks={"pytorch": False}
+        auto_connect_frameworks={"pytorch": False, "hydra": False}
     )
 
     cfg_container = OmegaConf.to_container(cfg, resolve=True)
