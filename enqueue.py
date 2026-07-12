@@ -126,6 +126,7 @@ def load_and_merge_configs(config_path, data_config_path=None, overrides=None):
     cfg = OmegaConf.load(config_path)
     if data_config_path:
         data_cfg = OmegaConf.load(data_config_path)
+        data_cfg = OmegaConf.create({"data": data_cfg})
         cfg = OmegaConf.merge(cfg, data_cfg)
     
     cfg_dict = OmegaConf.to_container(cfg, resolve=False)
