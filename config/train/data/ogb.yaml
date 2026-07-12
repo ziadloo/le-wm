@@ -2,6 +2,9 @@ dataset:
   name: ogbench/cube_single_expert.h5
   num_steps: ${eval:'${num_preds} + ${history_size}'}
   frameskip: 5
+  clearml_id: null
+  clearml_name: null
+  clearml_project: null
   keys_to_load:
     - pixels
     - action

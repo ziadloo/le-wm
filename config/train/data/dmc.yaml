@@ -2,6 +2,9 @@ dataset:
   num_steps: ${eval:'${num_preds} + ${history_size}'}
   frameskip: 5
   name: reacher.h5
+  clearml_id: null
+  clearml_name: null
+  clearml_project: null
   keys_to_load:
     - pixels
     - action

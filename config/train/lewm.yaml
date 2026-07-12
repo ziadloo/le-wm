@@ -48,8 +48,3 @@ loss:
     kwargs:
       knots: 17
       num_proj: 1024
-
-dataset:
-  clearml_id: null
-  clearml_name: null
-  clearml_project: null
