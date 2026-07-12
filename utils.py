@@ -34,21 +34,20 @@ def get_column_normalizer(dataset, source: str, target: str):
 class SaveCkptCallback(Callback):
     """Callback to save model checkpoint after each epoch using save_pretrained."""
 
-    def __init__(self, run_name, cfg, epoch_interval: int = 1):
+    def __init__(self, run_name, cfg, epoch_interval: int = 1, max_epochs: int = None):
         super().__init__()
         self.run_name = run_name
         self.cfg = cfg
         self.epoch_interval = epoch_interval
+        self.max_epochs = max_epochs
 
     def on_train_epoch_end(self, trainer, pl_module):
         super().on_train_epoch_end(trainer, pl_module)
-
+        
         if trainer.is_global_zero:
-            if (trainer.current_epoch + 1) % self.epoch_interval == 0:
-                self._save(pl_module.model, trainer.current_epoch + 1)
-
-            if (trainer.current_epoch + 1) == trainer.max_epochs:
-                self._save(pl_module.model, trainer.current_epoch + 1)
+            epoch = trainer.current_epoch + 1
+            if epoch % self.epoch_interval == 0 or (trainer.max_epochs and epoch == trainer.max_epochs):
+                self._save(pl_module.model, epoch)
 
     def _save(self, model, epoch):
         from stable_worldmodel.wm.utils import save_pretrained
@@ -58,3 +57,29 @@ class SaveCkptCallback(Callback):
             config=self.cfg,
             filename=f'weights_epoch_{epoch}.pt',
         )
+
+        from clearml import Task
+        task = Task.current_task()
+        if task:
+            from clearml import OutputModel
+            from stable_worldmodel.data.utils import get_cache_dir
+            from pathlib import Path
+            ckpt_dir = Path(get_cache_dir(sub_folder='checkpoints')) / self.run_name
+            ckpt_path = ckpt_dir / f'weights_epoch_{epoch}.pt'
+            
+            if ckpt_path.exists():
+                print(f"📦 Registering OutputModel with ClearML for epoch {epoch}...")
+                output_model = OutputModel(task=task, name=f"{self.run_name}-epoch-{epoch}")
+                output_model.update_weights(weights_filename=str(ckpt_path))
+                
+                from omegaconf import OmegaConf, DictConfig
+                if self.cfg is not None:
+                    cfg_dict = OmegaConf.to_container(self.cfg, resolve=True) if isinstance(self.cfg, DictConfig) else self.cfg
+                    if isinstance(cfg_dict, dict):
+                        output_model.update_design(config_dict=cfg_dict)
+                
+                tags = [f"epoch:{epoch}"]
+                if self.max_epochs and epoch == self.max_epochs:
+                    output_model.publish()
+                    tags.append("final-checkpoint")
+                output_model.tags = tags

@@ -13,6 +13,10 @@ seed: 3072
 img_size: 224
 embed_dim: 192
 history_size: 3
+scheduler_max_epochs: 100
+scheduler_type: LinearWarmupCosineAnnealingLR
+scheduler_interval: epoch
+epoch_interval: 1
 
 trainer:
   max_epochs: 100
@@ -20,6 +24,9 @@ trainer:
   accelerator: gpu
   precision: bf16
   gradient_clip_val: 1.0
+  limit_train_batches: null
+  limit_val_batches: null
+  log_every_n_steps: null
 
 loader:
   batch_size: 128
