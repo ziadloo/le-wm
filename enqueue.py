@@ -43,7 +43,7 @@ PRESETS = {
             "trainer.max_epochs": 20,
             "scheduler_max_epochs": 100,
             "trainer.precision": "bf16-mixed",
-            "loader.batch_size": 144,
+            "loader.batch_size": 64,
             "num_workers": 4,
             "loader.prefetch_factor": 2,
             "compile": True,

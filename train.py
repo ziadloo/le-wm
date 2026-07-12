@@ -102,7 +102,9 @@ def run(cfg):
     # Extract dataset options
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
-    task.set_tags(["base-experiment", f"data:{dataset_name}"])
+    # Append new tags while preserving any enqueued preset tags
+    existing_tags = task.get_tags() or []
+    task.set_tags(list(set(existing_tags + ["base-experiment", f"data:{dataset_name}"])))
 
     clearml_id = dataset_cfg.pop("clearml_id", None)
     clearml_name = dataset_cfg.pop("clearml_name", None)
