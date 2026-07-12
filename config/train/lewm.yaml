@@ -43,8 +43,9 @@ optimizer:
 num_preds: 1
 
 loss:
-  sigreg:
-    weight: 0.09
+  vicreg:
+    weight: 0.04
     kwargs:
-      knots: 17
-      num_proj: 1024
+      var_weight: 25.0
+      cov_weight: 1.0
+      gamma: 1.0
