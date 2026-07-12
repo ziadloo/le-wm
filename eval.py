@@ -178,7 +178,7 @@ def run(cfg: DictConfig):
         cfg.policy = cfg_container.get("policy", cfg.policy)
 
     # Sync and update ClearML's Configuration tab named "OmegaConf" to reflect the actual resolved/merged config
-    task.connect_configuration(OmegaConf.to_yaml(cfg), name="OmegaConf")
+    task.set_configuration_object("OmegaConf", OmegaConf.to_yaml(cfg))
 
     if not task.get_tags():
         task.set_tags(["base-experiment", "evaluation", f"data:{cfg.eval.dataset_name}"])

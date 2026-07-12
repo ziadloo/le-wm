@@ -100,7 +100,7 @@ def run(cfg):
         cfg.merge_with(cfg_dict)
 
     # Sync and update ClearML's Configuration tab named "OmegaConf" to reflect the actual resolved/merged config
-    task.connect_configuration(OmegaConf.to_yaml(cfg), name="OmegaConf")
+    task.set_configuration_object("OmegaConf", OmegaConf.to_yaml(cfg))
 
     # Extract dataset options
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
