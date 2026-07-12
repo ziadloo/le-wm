@@ -114,14 +114,6 @@ def run(cfg):
     clearml_name = dataset_cfg.pop("clearml_name", None)
     clearml_project = dataset_cfg.pop("clearml_project", "LeWM")
 
-    # Handle Lance loader compatibility
-    if "lance" in dataset_name.lower():
-        print("ℹ️ Lance dataset detected. Adjusting DataLoader settings to avoid pickling/shared memory crashes...")
-        with open_dict(cfg):
-            cfg.loader.num_workers = 0
-            cfg.loader.persistent_workers = False
-            cfg.loader.prefetch_factor = None
-
     downloaded_path = None
     if clearml_id or clearml_name:
         from clearml import Dataset
