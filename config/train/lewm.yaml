@@ -43,8 +43,7 @@ optimizer:
 num_preds: 1
 
 loss:
-  sigreg:
-    weight: 0.09
+  visreg:
+    weight: 5.0
     kwargs:
-      knots: 17
-      num_proj: 1024
+      num_projections: 256
