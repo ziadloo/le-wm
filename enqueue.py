@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import ssl
 import urllib3
 import sys
@@ -289,10 +290,110 @@ def handle_evaluate_job(job_id, queue_name):
         }
         enqueue_task(task_spec, queue_name)
 
+def handle_add_plot(job_id):
+    """Aggregates success rates from evaluation tasks and posts a line plot onto the training task."""
+    print(f"Fetching training task: {job_id}...")
+    try:
+        training_task = Task.get_task(task_id=job_id)
+    except Exception as e:
+        print(f"❌ Error fetching training task {job_id}: {e}")
+        sys.exit(1)
+
+    # Resolve the environment name from the dataset parameter
+    training_dataset_name = training_task.get_parameter("General/data/dataset/name")
+    if not training_dataset_name:
+        training_dataset_name = training_task.get_parameter("General/dataset/name")
+    if not training_dataset_name:
+        training_dataset_name = training_task.get_parameter("Args/data") or "Unknown"
+
+    dataset_lower = training_dataset_name.lower()
+    if "pusht" in dataset_lower:
+        env_name = "PushT"
+    elif "tworoom" in dataset_lower:
+        env_name = "TwoRoom"
+    elif "reacher" in dataset_lower:
+        env_name = "Reacher"
+    elif "cube" in dataset_lower:
+        env_name = "Cube"
+    else:
+        env_name = os.path.basename(training_dataset_name).split('.')[0].replace('_', ' ').title()
+
+    # Find all tasks tagged with the training job ID that are also tagged 'evaluation'
+    print(f"Searching for evaluation tasks tagged with: {job_id}...")
+    tagged_tasks = Task.get_tasks(tags=[job_id])
+    eval_tasks = [t for t in tagged_tasks if "evaluation" in t.get_tags()]
+    print(f"Found {len(eval_tasks)} evaluation tasks associated with this training job.")
+
+    epoch_to_success = {}
+
+    for t in eval_tasks:
+        # Extract epoch — try parameter first, then parse from task name
+        epoch = None
+        epoch_param = t.get_parameter("General/eval/epoch")
+        if epoch_param:
+            try:
+                epoch = int(epoch_param)
+            except ValueError:
+                pass
+
+        if epoch is None:
+            match = re.match(r'^(\d+)_', t.name)
+            if match:
+                epoch = int(match.group(1))
+            else:
+                match = re.search(r'(?:weights_epoch_|epoch=)(\d+)', t.name)
+                if match:
+                    epoch = int(match.group(1))
+
+        if epoch is None:
+            print(f"  Warning: Skipping task {t.id} (Name: {t.name}) - cannot determine epoch number.")
+            continue
+
+        # Extract success rate from scalar metrics
+        success_rate = None
+        metrics = t.get_last_scalar_metrics()
+        if metrics and "Evaluation Metrics" in metrics:
+            success_rate_data = metrics["Evaluation Metrics"].get("success_rate")
+            if success_rate_data:
+                success_rate = success_rate_data.get("last")
+
+        if success_rate is None:
+            print(f"  Info: Skipping epoch {epoch} (Task: {t.id}, Status: {t.status}) - no 'success_rate' metrics reported yet.")
+            continue
+
+        epoch_to_success[epoch] = float(success_rate)
+        print(f"  Found: Epoch {epoch} -> Success Rate: {success_rate}%")
+
+    if not epoch_to_success:
+        print("No success rate data could be collected from evaluation tasks. Plot will not be created.")
+        return
+
+    sorted_points = sorted(epoch_to_success.items())
+    print(f"\nCollected {len(sorted_points)} data points for plotting:")
+    for epoch, success_rate in sorted_points:
+        print(f"  Epoch {epoch:3d}: {success_rate:6.2f}%")
+
+    plot_metric = "Evaluation Performance"
+    plot_variant = f"{env_name} Success Rate vs Epoch"
+    print(f"\nAdding/Updating plot on training job {job_id}:")
+    print(f"  Metric (Title): {plot_metric}")
+    print(f"  Variant (Series): {plot_variant}")
+
+    logger = training_task.get_logger()
+    logger.report_scatter2d(
+        title=plot_metric,
+        series=plot_variant,
+        scatter=sorted_points,
+        iteration=0,
+        xaxis="Epoch",
+        yaxis="Success Rate"
+    )
+    print("✅ Successfully added plot to training task!")
+
 def main():
     parser = argparse.ArgumentParser(description="Generalized ClearML Enqueue Utility for LeWM Workspace.")
-    parser.add_argument("--mode", choices=["preset", "eval", "evaluate_job"], required=True,
-                        help="Execution mode: run a training preset, launch evaluation on checkpoint, or evaluate full training task models.")
+    parser.add_argument("--mode", choices=["preset", "eval", "evaluate_job", "add_plot"], required=True,
+                        help="Execution mode: run a training preset, launch evaluation on a checkpoint, evaluate all models from a training job, or aggregate eval metrics into a training task plot.")
     parser.add_argument("--preset", choices=list(PRESETS.keys()) + ["all_baselines"],
                         help="Name of the training preset to run (required in preset mode).")
     parser.add_argument("--checkpoint", default="lewm/weights_epoch_100.pt",
@@ -312,9 +413,10 @@ def main():
     dispatch = {
         "preset": lambda: handle_preset_mode(args.preset, args.queue, precision=args.precision),
         "eval": lambda: [handle_eval_checkpoint(f"lewm/weights_epoch_{epoch}.pt", args.queue) for epoch in range(1, 101)] if args.all_epochs else handle_eval_checkpoint(args.checkpoint, args.queue),
-        "evaluate_job": lambda: handle_evaluate_job(args.job_id, args.queue)
+        "evaluate_job": lambda: handle_evaluate_job(args.job_id, args.queue),
+        "add_plot": lambda: handle_add_plot(args.job_id)
     }
-    
+
     dispatch[args.mode]()
 
 if __name__ == "__main__":
