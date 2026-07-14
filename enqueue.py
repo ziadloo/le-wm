@@ -230,28 +230,77 @@ def handle_eval_checkpoint(checkpoint, queue_name):
     enqueue_task(task_spec, queue_name)
 
 def handle_evaluate_job(job_id, queue_name):
-    """Fetches checkpoints registered by a training job and schedules evaluation tasks."""
+    """Fetches checkpoints registered by a training job and schedules evaluation tasks.
+
+    The dataset and eval config are detected automatically from the training task's
+    parameters — no assumptions are made about the environment type.
+    """
+    # Per-dataset lookup table: keyed by substring matched against the dataset name.
+    # Order matters: more-specific substrings first.
+    DATASET_SPECS = [
+        {
+            "match": "pusht",
+            "config_path": "config/eval/pusht.yaml",
+            "clearml_name": "LeWM-PushT",
+        },
+        {
+            "match": "tworoom",
+            "config_path": "config/eval/tworoom.yaml",
+            "clearml_name": "LeWM-TwoRoom",
+        },
+        {
+            "match": "reacher",
+            "config_path": "config/eval/reacher.yaml",
+            "clearml_name": "LeWM-Reacher",
+        },
+        {
+            "match": "cube",
+            "config_path": "config/eval/cube.yaml",
+            "clearml_name": "LeWM-Cube",
+        },
+    ]
+
     print(f"🔍 Fetching training task ID: {job_id}...")
     t = Task.get_task(task_id=job_id)
-    
-    # Find dataset name parameter
-    try:
-        training_dataset_name = t.data.configuration.get('OmegaConf').value.split("name: ")[1].split("\n")[0].strip()
-    except Exception:
-        training_dataset_name = "pusht_expert_train.lance"
-        
+
+    # Resolve the dataset name from task parameters (same strategy as handle_add_plot)
+    training_dataset_name = t.get_parameter("General/data/dataset/name")
+    if not training_dataset_name:
+        training_dataset_name = t.get_parameter("General/dataset/name")
+    if not training_dataset_name:
+        training_dataset_name = t.get_parameter("Args/data")
+    if not training_dataset_name:
+        print("❌ Error: Could not determine dataset name from training task parameters.")
+        sys.exit(1)
+
+    print(f"📂 Detected dataset: {training_dataset_name}")
+
+    # Match against the lookup table
+    dataset_lower = training_dataset_name.lower()
+    matched_spec = None
+    for spec in DATASET_SPECS:
+        if spec["match"] in dataset_lower:
+            matched_spec = spec
+            break
+
+    if matched_spec is None:
+        print(f"❌ Error: Dataset '{training_dataset_name}' did not match any known environment. "
+              f"Supported: {[s['match'] for s in DATASET_SPECS]}")
+        sys.exit(1)
+
+    print(f"🗂  Using eval config: {matched_spec['config_path']} (ClearML dataset: {matched_spec['clearml_name']})")
+
     models = t.get_models().get('output', [])
     task_models = [m for m in models if m.task == job_id]
-    
+
     if not task_models:
         print(f"❌ Error: No output models found registered by task {job_id}.")
         return
 
     print(f"📊 Found {len(task_models)} output models. Scheduling evaluation jobs...")
-    
-    # Process each registered model
+
     for m in task_models:
-        # Determine epoch from tags
+        # Determine epoch from model tags
         epoch = None
         for tag in m.tags:
             if tag.startswith("epoch:"):
@@ -260,33 +309,32 @@ def handle_evaluate_job(job_id, queue_name):
                 except ValueError:
                     pass
                 break
-                
+
         if epoch is None:
-            # Fallback to name parsing if tags are missing
+            # Fallback: parse from model name (e.g. "lewm-epoch-42")
             try:
                 epoch = int(m.name.split("-epoch-")[1])
             except Exception:
+                print(f"  Warning: Skipping model {m.id} (Name: {m.name}) - cannot determine epoch.")
                 continue
-                
+
         epoch_str = f"{epoch:03d}"
         task_spec = {
             "project_name": "LeWM/Evaluation",
             "task_name": f"LeWM-Eval-{epoch_str}-{t.name}",
             "task_type": Task.TaskTypes.testing,
             "script": "eval.py",
-            # Pass the model representation dynamically to policy
             "argparse_args": [("policy", f"model:{m.id}")],
-            "config_path": "config/eval/pusht.yaml",
+            "config_path": matched_spec["config_path"],
             "overrides": {
                 "policy": f"model:{m.id}",
                 "eval.dataset_name": training_dataset_name,
                 "dataset.stats": training_dataset_name,
-                # Resolve the correct dataset from name
-                "eval.clearml_name": "LeWM-PushT" if "push" in training_dataset_name.lower() else "LeWM-TwoRoom",
-                "eval.clearml_project": "LeWM"
+                "eval.clearml_name": matched_spec["clearml_name"],
+                "eval.clearml_project": "LeWM",
             },
             "tags": ["evaluation", job_id, f"epoch:{epoch}"],
-            "packages": DEFAULT_EVAL_PACKAGES
+            "packages": DEFAULT_EVAL_PACKAGES,
         }
         enqueue_task(task_spec, queue_name)
 
