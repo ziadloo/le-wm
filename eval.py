@@ -99,7 +99,6 @@ def load_pretrained_compat(name: str):
                 config = json.load(f)
     elif name.endswith('.ckpt'):
         import json
-        from pathlib import Path
         local_path = cache_dir / name
         if not local_path.exists():
             if Path(name).exists():
