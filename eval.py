@@ -88,13 +88,46 @@ def get_episodes_length(dataset, episodes):
 
 
 def get_dataset(cfg, dataset_name):
-    dataset_path = Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
-    dataset = swm.data.HDF5Dataset(
-        dataset_name,
-        keys_to_cache=cfg.dataset.keys_to_cache,
-        cache_dir=dataset_path,
+    cache_dir = Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
+
+    # Resolve the actual path on disk by checking different extensions and locations
+    actual_path = None
+    possible_names = [dataset_name, dataset_name + ".lance", dataset_name + ".h5"]
+
+    if dataset_name.endswith((".h5", ".lance")):
+        possible_names = [dataset_name, os.path.splitext(dataset_name)[0]]
+
+    for name in possible_names:
+        # Check absolute path
+        p = Path(name)
+        if p.is_absolute() and p.exists():
+            actual_path = p
+            break
+        # Check relative to datasets cache directory
+        p = cache_dir / "datasets" / name
+        if p.exists():
+            actual_path = p
+            break
+        # Check relative to cache_dir directly
+        p = cache_dir / name
+        if p.exists():
+            actual_path = p
+            break
+
+    if actual_path is None:
+        # Fallback to the default search path
+        actual_path = cache_dir / "datasets" / dataset_name
+
+    print(f"📂 Resolving dataset path: {actual_path}")
+
+    # Load dataset using stable_worldmodel's dynamic format reader
+    dataset = swm.data.load_dataset(
+        str(actual_path),
+        cache_dir=str(cache_dir),
+        keys_to_cache=cfg.dataset.keys_to_cache
     )
     return dataset
+
 
 def load_pretrained_compat(name: str):
     from hydra.utils import instantiate
