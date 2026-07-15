@@ -280,6 +280,7 @@ def run(cfg: DictConfig):
 
         dataset = get_dataset(cfg, cfg.eval.dataset_name)
         stats_dataset = dataset  # get_dataset(cfg, cfg.dataset.stats)
+        col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
         ep_indices, _ = np.unique(stats_dataset.get_col_data(col_name), return_index=True)
         ep_indices = ep_indices.astype(np.int64)
 
@@ -392,11 +393,12 @@ def run(cfg: DictConfig):
             f.write(f"evaluation_time: {end_time - start_time} seconds\n")
 
     finally:
-        # Guarantee dataset cleanup on local agent
+        # Guarantee dataset cleanup on local agent (temporarily commented out for fast testing/caching)
         if downloaded_path:
             import shutil
-            print(f"🧹 Cleaning up local dataset copy at {downloaded_path}...")
-            shutil.rmtree(downloaded_path, ignore_errors=True)
+            # print(f"🧹 Cleaning up local dataset copy at {downloaded_path}...")
+            # shutil.rmtree(downloaded_path, ignore_errors=True)
+            pass
 
 
 if __name__ == "__main__":
