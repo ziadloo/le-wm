@@ -258,7 +258,7 @@ def handle_evaluate_job(job_id, queue_name):
             "match": "cube",
             "config_path": "config/eval/cube.yaml",
             "clearml_name": "LeWM-Cube",
-            "extra_packages": ["mujoco", "dm-env", "dm-tree", "lxml", "ogbench"],
+            "extra_packages": ["mujoco", "dm-env", "dm-tree", "lxml"],
         },
     ]
 

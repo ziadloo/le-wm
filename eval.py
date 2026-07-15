@@ -16,6 +16,21 @@ except ImportError:
     except Exception as e:
         print(f"⚠️ Failed to dynamically install dm-control: {e}")
 
+# Check and dynamically install ogbench with --no-deps if needed (bypasses automatic dm-control -> labmaze build dependency)
+try:
+    import ogbench
+except ImportError:
+    import subprocess
+    import sys
+    print("📥 ogbench not found. Installing dynamically using --no-deps...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", "ogbench"])
+        import ogbench
+        print("✅ ogbench installed successfully!")
+    except Exception as e:
+        print(f"⚠️ Failed to dynamically install ogbench: {e}")
+
+
 
 import ssl
 import urllib3
