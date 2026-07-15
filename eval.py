@@ -393,12 +393,11 @@ def run(cfg: DictConfig):
             f.write(f"evaluation_time: {end_time - start_time} seconds\n")
 
     finally:
-        # Guarantee dataset cleanup on local agent (temporarily commented out for fast testing/caching)
+        # Guarantee dataset cleanup on local agent
         if downloaded_path:
             import shutil
-            # print(f"🧹 Cleaning up local dataset copy at {downloaded_path}...")
-            # shutil.rmtree(downloaded_path, ignore_errors=True)
-            pass
+            print(f"🧹 Cleaning up local dataset copy at {downloaded_path}...")
+            shutil.rmtree(downloaded_path, ignore_errors=True)
 
 
 if __name__ == "__main__":
