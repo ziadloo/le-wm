@@ -252,10 +252,16 @@ def run(cfg: DictConfig):
                     curr = curr[part]
                 
                 leaf = parts[-1]
-                try:
-                    parsed_val = json.loads(param_val)
-                except Exception:
-                    parsed_val = param_val
+                val_lower = str(param_val).strip().lower()
+                if val_lower == "true":
+                    parsed_val = True
+                elif val_lower == "false":
+                    parsed_val = False
+                else:
+                    try:
+                        parsed_val = json.loads(param_val)
+                    except Exception:
+                        parsed_val = param_val
                 
                 curr[leaf] = parsed_val
 
