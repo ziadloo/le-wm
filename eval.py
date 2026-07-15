@@ -345,8 +345,8 @@ def run(cfg: DictConfig):
 
         print(random_episode_indices)
 
-        eval_episodes = np.asarray(dataset.get_row_data(random_episode_indices)[col_name]).reshape(-1)
-        eval_start_idx = np.asarray(dataset.get_row_data(random_episode_indices)["step_idx"]).reshape(-1)
+        eval_episodes = np.asarray(dataset.get_col_data(col_name))[random_episode_indices].reshape(-1)
+        eval_start_idx = np.asarray(dataset.get_col_data("step_idx"))[random_episode_indices].reshape(-1)
 
         if len(eval_episodes) < cfg.eval.num_eval:
             raise ValueError("Not enough episodes with sufficient length for evaluation.")
