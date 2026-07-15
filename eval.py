@@ -79,12 +79,13 @@ def img_transform(cfg):
 def get_episodes_length(dataset, episodes):
     col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
 
-    episode_idx = dataset.get_col_data(col_name)
-    step_idx = dataset.get_col_data("step_idx")
+    episode_idx = np.asarray(dataset.get_col_data(col_name)).reshape(-1)
+    step_idx = np.asarray(dataset.get_col_data("step_idx")).reshape(-1)
     lengths = []
     for ep_id in episodes:
         lengths.append(np.max(step_idx[episode_idx == ep_id]) + 1)
     return np.array(lengths)
+
 
 
 def get_dataset(cfg, dataset_name):
@@ -326,11 +327,11 @@ def run(cfg: DictConfig):
         # Map each dataset row’s episode_idx to its max_start_idx
         col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
         max_start_per_row = np.array(
-            [max_start_idx_dict[ep_id] for ep_id in dataset.get_col_data(col_name)]
+            [max_start_idx_dict[ep_id] for ep_id in np.asarray(dataset.get_col_data(col_name)).reshape(-1)]
         )
 
         # remove all the lines of dataset for which dataset['step_idx'] > max_start_per_row
-        valid_mask = dataset.get_col_data("step_idx") <= max_start_per_row
+        valid_mask = np.asarray(dataset.get_col_data("step_idx")).reshape(-1) <= max_start_per_row
         valid_indices = np.nonzero(valid_mask)[0]
         print(valid_mask.sum(), "valid starting points found for evaluation.")
 
@@ -344,8 +345,8 @@ def run(cfg: DictConfig):
 
         print(random_episode_indices)
 
-        eval_episodes = dataset.get_row_data(random_episode_indices)[col_name]
-        eval_start_idx = dataset.get_row_data(random_episode_indices)["step_idx"]
+        eval_episodes = np.asarray(dataset.get_row_data(random_episode_indices)[col_name]).reshape(-1)
+        eval_start_idx = np.asarray(dataset.get_row_data(random_episode_indices)["step_idx"]).reshape(-1)
 
         if len(eval_episodes) < cfg.eval.num_eval:
             raise ValueError("Not enough episodes with sufficient length for evaluation.")
