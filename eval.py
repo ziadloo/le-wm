@@ -2,6 +2,21 @@ import os
 
 os.environ["MUJOCO_GL"] = "egl"
 
+# Check and dynamically install dm-control with --no-deps if needed (bypasses Bazel/labmaze build issue)
+try:
+    import dm_control
+except ImportError:
+    import subprocess
+    import sys
+    print("📥 dm-control not found. Installing dynamically using --no-deps...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", "dm-control"])
+        import dm_control
+        print("✅ dm-control installed successfully!")
+    except Exception as e:
+        print(f"⚠️ Failed to dynamically install dm-control: {e}")
+
+
 import ssl
 import urllib3
 
