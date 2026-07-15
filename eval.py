@@ -173,7 +173,7 @@ def run(cfg: DictConfig):
     cfg_container = OmegaConf.to_container(cfg, resolve=True)
     task.connect(cfg_container)
     with open_dict(cfg):
-        cfg.policy = cfg_container.get("policy", cfg.policy)
+        cfg.merge_with(cfg_container)
 
     # Sync and update ClearML's Configuration tab named "OmegaConf" to reflect the actual resolved/merged config
     task.set_configuration_object("OmegaConf", OmegaConf.to_yaml(cfg))
