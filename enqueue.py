@@ -377,23 +377,36 @@ def handle_add_plot(job_id):
     epoch_to_success = {}
 
     for t in eval_tasks:
-        # Extract epoch — try parameter first, then parse from task name
+        # Extract epoch — try tags first, then parameter, then name parsing
         epoch = None
-        epoch_param = t.get_parameter("General/eval/epoch")
-        if epoch_param:
-            try:
-                epoch = int(epoch_param)
-            except ValueError:
-                pass
+        for tag in t.get_tags():
+            if tag.startswith("epoch:"):
+                try:
+                    epoch = int(tag.split(":")[1])
+                except ValueError:
+                    pass
+                break
 
         if epoch is None:
-            match = re.match(r'^(\d+)_', t.name)
+            epoch_param = t.get_parameter("General/eval/epoch")
+            if epoch_param:
+                try:
+                    epoch = int(epoch_param)
+                except ValueError:
+                    pass
+
+        if epoch is None:
+            match = re.search(r'LeWM-Eval-(\d+)', t.name)
             if match:
                 epoch = int(match.group(1))
             else:
-                match = re.search(r'(?:weights_epoch_|epoch=)(\d+)', t.name)
+                match = re.match(r'^(\d+)_', t.name)
                 if match:
                     epoch = int(match.group(1))
+                else:
+                    match = re.search(r'(?:weights_epoch_|epoch=)(\d+)', t.name)
+                    if match:
+                        epoch = int(match.group(1))
 
         if epoch is None:
             print(f"  Warning: Skipping task {t.id} (Name: {t.name}) - cannot determine epoch number.")
