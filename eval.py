@@ -78,17 +78,13 @@ def load_pretrained_compat(name: str):
     if is_clearml_id:
         model_id = name.replace("model:", "", 1)
         from clearml import Model
-        from omegaconf import OmegaConf
         print(f"📥 Fetching ClearML model weights for ID: {model_id}...")
         clearml_model = Model(model_id=model_id)
         checkpoint_path = Path(clearml_model.get_local_copy())
 
-        # Load configuration from model config_text if stored (OmegaConf/Hydra format string)
-        config_text = clearml_model.config_text or ""
-        if config_text.strip():
-            print("📋 Loading config from model config_text...")
-            config = OmegaConf.to_container(OmegaConf.create(config_text), resolve=True)
-        else:
+        # config_dict returns the Python dict stored via update_design(config_dict=...)
+        config = clearml_model.config_dict
+        if not config:
             # Fallback to local config.json
             config_path = checkpoint_path.parent / 'config.json'
             if not config_path.exists():
@@ -98,6 +94,8 @@ def load_pretrained_compat(name: str):
             import json
             with open(config_path) as f:
                 config = json.load(f)
+        else:
+            print("📋 Loading config from model config_dict...")
     elif name.endswith('.ckpt'):
         import json
         local_path = cache_dir / name
