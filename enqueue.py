@@ -252,13 +252,13 @@ def handle_evaluate_job(job_id, queue_name):
             "match": "reacher",
             "config_path": "config/eval/reacher.yaml",
             "clearml_name": "LeWM-Reacher",
-            "extra_packages": ["mujoco", "dm-control"],
+            "extra_packages": ["mujoco", "--no-deps dm-control", "dm-env", "dm-tree", "lxml"],
         },
         {
             "match": "cube",
             "config_path": "config/eval/cube.yaml",
             "clearml_name": "LeWM-Cube",
-            "extra_packages": ["mujoco", "dm-control"],
+            "extra_packages": ["mujoco", "--no-deps dm-control", "dm-env", "dm-tree", "lxml"],
         },
     ]
 
