@@ -240,6 +240,25 @@ def run(cfg: DictConfig):
     with open_dict(cfg):
         cfg.merge_with(cfg_container)
 
+        # Manually merge any General/* parameters from ClearML to support keys not in the default schema
+        import json
+        for param_key, param_val in task.get_parameters().items():
+            if param_key.startswith("General/"):
+                parts = param_key.split("/")[1:]
+                curr = cfg
+                for part in parts[:-1]:
+                    if part not in curr:
+                        curr[part] = {}
+                    curr = curr[part]
+                
+                leaf = parts[-1]
+                try:
+                    parsed_val = json.loads(param_val)
+                except Exception:
+                    parsed_val = param_val
+                
+                curr[leaf] = parsed_val
+
     # Sync and update ClearML's Configuration tab named "OmegaConf" to reflect the actual resolved/merged config
     task.set_configuration_object("OmegaConf", OmegaConf.to_yaml(cfg))
 
