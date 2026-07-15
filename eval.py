@@ -245,9 +245,9 @@ def run(cfg: DictConfig):
         task.set_tags(["base-experiment", "evaluation", f"data:{cfg.eval.dataset_name}"])
 
     # Resolve ClearML dataset if specified
-    clearml_id = cfg.eval.get("clearml_id", None)
-    clearml_name = cfg.eval.get("clearml_name", None)
-    clearml_project = cfg.eval.get("clearml_project", "LeWM")
+    clearml_id = cfg.eval.get("clearml_id", None) or task.get_parameter("General/eval/clearml_id")
+    clearml_name = cfg.eval.get("clearml_name", None) or task.get_parameter("General/eval/clearml_name")
+    clearml_project = cfg.eval.get("clearml_project", None) or task.get_parameter("General/eval/clearml_project") or "LeWM"
 
     downloaded_path = None
     if clearml_id or clearml_name:
