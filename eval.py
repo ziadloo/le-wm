@@ -78,15 +78,16 @@ def load_pretrained_compat(name: str):
     if is_clearml_id:
         model_id = name.replace("model:", "", 1)
         from clearml import Model
+        from omegaconf import OmegaConf
         print(f"📥 Fetching ClearML model weights for ID: {model_id}...")
         clearml_model = Model(model_id=model_id)
         checkpoint_path = Path(clearml_model.get_local_copy())
-        
-        # Load configuration from model design if stored
-        design = clearml_model.design or {}
-        if design:
-            print("📋 Loading config from model design...")
-            config = design
+
+        # Load configuration from model config_text if stored (OmegaConf/Hydra format string)
+        config_text = clearml_model.config_text or ""
+        if config_text.strip():
+            print("📋 Loading config from model config_text...")
+            config = OmegaConf.to_container(OmegaConf.create(config_text), resolve=True)
         else:
             # Fallback to local config.json
             config_path = checkpoint_path.parent / 'config.json'
