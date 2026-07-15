@@ -252,11 +252,13 @@ def handle_evaluate_job(job_id, queue_name):
             "match": "reacher",
             "config_path": "config/eval/reacher.yaml",
             "clearml_name": "LeWM-Reacher",
+            "extra_packages": ["mujoco"],
         },
         {
             "match": "cube",
             "config_path": "config/eval/cube.yaml",
             "clearml_name": "LeWM-Cube",
+            "extra_packages": ["mujoco"],
         },
     ]
 
@@ -334,7 +336,7 @@ def handle_evaluate_job(job_id, queue_name):
                 "eval.clearml_project": "LeWM",
             },
             "tags": ["evaluation", job_id, f"epoch:{epoch}"],
-            "packages": DEFAULT_EVAL_PACKAGES,
+            "packages": DEFAULT_EVAL_PACKAGES + matched_spec.get("extra_packages", []),
         }
         enqueue_task(task_spec, queue_name)
 
