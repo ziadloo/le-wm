@@ -79,12 +79,13 @@ def img_transform(cfg):
 def get_episodes_length(dataset, episodes):
     col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
 
-    episode_idx = np.asarray(dataset.get_col_data(col_name)).reshape(-1)
-    step_idx = np.asarray(dataset.get_col_data("step_idx")).reshape(-1)
+    episode_idx = np.asarray(dataset.get_col_data(col_name)).reshape(-1).astype(np.int64)
+    step_idx = np.asarray(dataset.get_col_data("step_idx")).reshape(-1).astype(np.int64)
     lengths = []
     for ep_id in episodes:
         lengths.append(np.max(step_idx[episode_idx == ep_id]) + 1)
     return np.array(lengths)
+
 
 
 
@@ -279,8 +280,8 @@ def run(cfg: DictConfig):
 
         dataset = get_dataset(cfg, cfg.eval.dataset_name)
         stats_dataset = dataset  # get_dataset(cfg, cfg.dataset.stats)
-        col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
         ep_indices, _ = np.unique(stats_dataset.get_col_data(col_name), return_index=True)
+        ep_indices = ep_indices.astype(np.int64)
 
         process = {}
         for col in cfg.dataset.keys_to_cache:
@@ -345,8 +346,8 @@ def run(cfg: DictConfig):
 
         print(random_episode_indices)
 
-        eval_episodes = np.asarray(dataset.get_col_data(col_name))[random_episode_indices].reshape(-1)
-        eval_start_idx = np.asarray(dataset.get_col_data("step_idx"))[random_episode_indices].reshape(-1)
+        eval_episodes = np.asarray(dataset.get_col_data(col_name))[random_episode_indices].reshape(-1).astype(np.int64)
+        eval_start_idx = np.asarray(dataset.get_col_data("step_idx"))[random_episode_indices].reshape(-1).astype(np.int64)
 
         if len(eval_episodes) < cfg.eval.num_eval:
             raise ValueError("Not enough episodes with sufficient length for evaluation.")
