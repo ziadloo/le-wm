@@ -69,6 +69,6 @@ loss:
       implementation: fused
       kernel_repo_id: ${kernels.sigreg.repo_id}
       validation_steps: 0
-      normalization_implementation: eager
+      normalization_implementation: fused
       normalization_kernel_repo_id: ${kernels.projection_normalization.repo_id}
       normalization_validation_steps: 0
