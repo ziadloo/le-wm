@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import ssl
+import subprocess
 import urllib3
 import sys
 
@@ -212,19 +213,31 @@ def enqueue_task(task_spec, queue_name="default"):
         cfg_dict["data"]["dataset"]["clearml_name"] = task_spec.get("clearml_dataset_name")
         cfg_dict["data"]["dataset"]["clearml_project"] = "LeWM"
         
+    remote_url = subprocess.check_output(["git", "remote", "get-url", "origin"], text=True).strip()
+    branch = subprocess.check_output(["git", "branch", "--show-current"], text=True).strip()
+    remote_ref = f"origin/{branch}"
+    base_commit = subprocess.check_output(["git", "rev-parse", remote_ref], text=True).strip()
+    complete_diff = subprocess.check_output(["git", "diff", "--binary", base_commit, "HEAD"], text=True)
     task = Task.create(
         project_name=task_spec["project_name"],
         task_name=task_spec["task_name"],
         task_type=task_spec["task_type"],
         script=task_spec["script"],
         argparse_args=task_spec.get("argparse_args", []),
+        repo=remote_url, branch=branch, commit=base_commit,
         force_single_script_file=False,
-        detect_repository=True,
+        detect_repository=False,
+        add_task_init_call=False,
         packages=task_spec.get("packages", DEFAULT_TRAIN_PACKAGES)
     )
+    task.set_script(repository=remote_url, branch=branch, commit=base_commit,
+                    diff=complete_diff, working_dir=".", entry_point=task_spec["script"])
     
     task.connect(cfg_dict)
     task.set_tags(task_spec.get("tags", []))
+    script = task.get_script()
+    if script.get("version_num") != base_commit or not script.get("diff"):
+        raise RuntimeError("ClearML did not capture the remote-reachable base commit and complete local diff")
     
     print(f"📦 Enqueueing Task ID {task.id} to queue '{queue_name}'...")
     Task.enqueue(task=task, queue_name=queue_name)
