@@ -235,8 +235,9 @@ def enqueue_task(task_spec, queue_name="default"):
     
     task.connect(cfg_dict)
     task.set_tags(task_spec.get("tags", []))
-    script = task.get_script()
-    if script.get("version_num") != base_commit or not script.get("diff"):
+    task.reload()
+    script = task.data.script
+    if script.version_num != base_commit or not script.diff:
         raise RuntimeError("ClearML did not capture the remote-reachable base commit and complete local diff")
     
     print(f"📦 Enqueueing Task ID {task.id} to queue '{queue_name}'...")
