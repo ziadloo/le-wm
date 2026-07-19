@@ -236,7 +236,9 @@ def lejepa_forward(self, batch, stage, cfg):
 
     if eager_encoder_output is not None:
         eager_emb=eager_encoder_output["emb"];eager_tgt=eager_emb[:,n_preds:]
-        with torch.no_grad(): eager_pred_loss=(eager_vit_pred-eager_tgt).pow(2).mean();eager_total=eager_pred_loss+lambd*self.sigreg(eager_emb.transpose(0,1),validate=False)
+        # SIGReg is shared and samples random projections; reuse its actual loss
+        # so the comparison isolates only the encoder branch without advancing RNG.
+        with torch.no_grad(): eager_pred_loss=(eager_vit_pred-eager_tgt).pow(2).mean();eager_total=eager_pred_loss+lambd*output["sigreg_loss"].detach()
         metrics=compare_vit_mlp_up_kernel(self,vit_layers,eager_emb,emb,eager_total,output["loss"],cfg.kernels.vit_layernorm_exact_gelu_mlp_up.validation)
         self.log_dict(metrics,on_step=True,on_epoch=False,sync_dist=False)
         print(f"ViT MLP-up kernel training validation: metrics={metrics}, module={load_vit_layernorm_exact_gelu_mlp_up_kernel().__file__}")
