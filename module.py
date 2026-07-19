@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sys
+import types
 
 import torch
 from torch import nn
@@ -13,9 +14,49 @@ PROJECTION_NORMALIZATION_KERNEL_REPO = "mlengineer-ai/projection-column-normaliz
 PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO = "mlengineer-ai/predictor-dual-layernorm-adaln"
 PREDICTOR_GATED_RESIDUAL_GEMM_KERNEL_REPO = "mlengineer-ai/predictor-gated-residual-gemm"
 PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO = "mlengineer-ai/predictor-exact-gelu-dropout-gemm"
+VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL_REPO = "mlengineer-ai/vit-layernorm-exact-gelu-mlp-up"
 _PREDICTOR_KERNEL = None
 _PREDICTOR_GATED_RESIDUAL_KERNEL = None
 _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL = None
+_VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL = None
+
+def load_vit_layernorm_exact_gelu_mlp_up_kernel(repo_id=VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL_REPO):
+    global _VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL
+    if _VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL is not None: return _VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL
+    overrides=dict(entry.split("=",1) for entry in os.environ.get("LOCAL_KERNELS","").split(os.pathsep) if "=" in entry)
+    kernel_path=Path(overrides.get(repo_id,""));init_path=kernel_path/"__init__.py"
+    if not init_path.is_file(): raise RuntimeError(f"Fused ViT LayerNorm MLP-up GELU requested but artifact is unavailable: {init_path}")
+    module_name="lewm_vit_layernorm_exact_gelu_mlp_up"
+    if module_name in sys.modules: _VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL=sys.modules[module_name];return _VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL
+    spec=importlib.util.spec_from_file_location(module_name,init_path,submodule_search_locations=[str(kernel_path)])
+    if spec is None or spec.loader is None: raise RuntimeError(f"Cannot load ViT LayerNorm MLP-up GELU kernel from {init_path}")
+    module=importlib.util.module_from_spec(spec);sys.modules[module_name]=module;spec.loader.exec_module(module);_VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL=module
+    print(f"Loaded ViT LayerNorm exact-GELU MLP-up ABI3 module from {module.__file__}");return module
+
+def _vit_layer_forward(self,hidden_states,attention_mask=None,**kwargs):
+    residual=hidden_states;hidden_states=self.layernorm_before(hidden_states)
+    hidden_states,_=self.attention(hidden_states,attention_mask,**kwargs);hidden_states=self.dropout(hidden_states);hidden_states=hidden_states+residual
+    residual=hidden_states; mode=self._lewm_mlp_up_mode
+    if mode=="eager": hidden_states=self.mlp(self.layernorm_after(hidden_states))
+    else:
+        if mode=="validate":
+            eager=self.mlp.activation_fn(self.mlp.fc1(self.layernorm_after(hidden_states)))
+        ln=self.layernorm_after;fc1=self.mlp.fc1
+        fused=load_vit_layernorm_exact_gelu_mlp_up_kernel(self._lewm_mlp_up_repo).vit_layernorm_exact_gelu_mlp_up(hidden_states,ln.weight,ln.bias,fc1.weight,fc1.bias,ln.eps)
+        if mode=="validate": self._lewm_mlp_up_records.append((eager,fused))
+        hidden_states=self.mlp.fc2(fused)
+    return self.dropout(hidden_states)+residual
+
+def configure_vit_layernorm_exact_gelu_mlp_up(encoder,implementation="eager",kernel_repo_id=VIT_LAYERNORM_EXACT_GELU_MLP_UP_KERNEL_REPO):
+    if implementation not in {"eager","fused","validate"}: raise ValueError(f"Unknown ViT MLP-up implementation: {implementation}")
+    layers=[]
+    for layer in encoder.modules():
+        if type(layer).__name__=="ViTLayer" and hasattr(layer,"layernorm_after") and hasattr(layer,"mlp"):
+            layer._lewm_mlp_up_mode=implementation;layer._lewm_mlp_up_repo=kernel_repo_id;layer._lewm_mlp_up_records=[]
+            layer.forward=types.MethodType(_vit_layer_forward,layer);layers.append(layer)
+    if not layers: raise RuntimeError("No compatible ViTLayer modules found for MLP-up kernel integration")
+    if implementation in {"fused","validate"}: load_vit_layernorm_exact_gelu_mlp_up_kernel(kernel_repo_id)
+    return layers
 
 def load_predictor_exact_gelu_dropout_kernel(repo_id=PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO):
     global _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL

@@ -7,6 +7,8 @@ encoder:
   image_size: ${img_size}
   pretrained: false
   use_mask_token: false
+  mlp_up_implementation: eager
+  mlp_up_kernel_repo_id: ${kernels.vit_layernorm_exact_gelu_mlp_up.repo_id}
 
 predictor:
   _target_: module.ARPredictor

@@ -30,7 +30,9 @@ from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
 from omegaconf import OmegaConf, open_dict
 
 from module import (SIGReg, load_predictor_kernel, load_predictor_gated_residual_kernel,
-                    load_predictor_exact_gelu_dropout_kernel)
+                    load_predictor_exact_gelu_dropout_kernel,
+                    configure_vit_layernorm_exact_gelu_mlp_up,
+                    load_vit_layernorm_exact_gelu_mlp_up_kernel)
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 from clearml import Task
 
@@ -152,6 +154,21 @@ def compare_exact_gelu_dropout_kernel(module,eager_pred,fused_pred,eager_loss,fu
         raise RuntimeError(f"Predictor exact-GELU dropout GEMM mismatch direct={direct_max} downstream={downstream_max} loss={loss_abs} grad_abs={grad_abs} grad_rel={grad_rel}")
     return {"predictor_exact_gelu_dropout_gemm_validation/direct_max_abs":direct_max,"predictor_exact_gelu_dropout_gemm_validation/downstream_max_abs":downstream_max,"predictor_exact_gelu_dropout_gemm_validation/loss_abs":loss_abs,"predictor_exact_gelu_dropout_gemm_validation/grad_max_abs":grad_abs,"predictor_exact_gelu_dropout_gemm_validation/grad_rel_l2":grad_rel,"predictor_exact_gelu_dropout_gemm_validation/calls":float(len(direct))}
 
+def compare_vit_mlp_up_kernel(module,layers,eager_emb,fused_emb,eager_loss,fused_loss,tolerances):
+    diffs=[(a.float()-b.float()).abs().max() for layer in layers for a,b in layer._lewm_mlp_up_records]
+    direct_max=torch.stack(diffs).max().item() if diffs else float("inf")
+    downstream_max=(eager_emb.float()-fused_emb.float()).abs().max().item();loss_abs=(eager_loss.detach()-fused_loss.detach()).abs().item()
+    params=[p for p in module.model.encoder.parameters() if p.requires_grad]
+    refs=torch.autograd.grad(eager_loss,params,retain_graph=True,allow_unused=True);deltas=torch.autograd.grad(eager_loss-fused_loss,params,retain_graph=True,allow_unused=True)
+    grad_abs=0.;ds=torch.zeros((),device=fused_loss.device);rs=torch.zeros_like(ds)
+    for ref,delta in zip(refs,deltas):
+        if ref is None: continue
+        delta=torch.zeros_like(ref) if delta is None else delta;grad_abs=max(grad_abs,delta.float().abs().max().item());ds+=delta.float().square().sum();rs+=ref.float().square().sum()
+    grad_rel=(ds.sqrt()/rs.sqrt().clamp_min(1e-12)).item()
+    if direct_max>tolerances.output_atol or downstream_max>tolerances.downstream_atol or loss_abs>tolerances.loss_atol or (grad_abs>tolerances.grad_atol and grad_rel>tolerances.grad_rtol):
+        raise RuntimeError(f"ViT MLP-up mismatch direct={direct_max} downstream={downstream_max} loss={loss_abs} grad_abs={grad_abs} grad_rel={grad_rel}")
+    return {"vit_ln_mlp_up_gelu_validation/direct_max_abs":direct_max,"vit_ln_mlp_up_gelu_validation/downstream_max_abs":downstream_max,"vit_ln_mlp_up_gelu_validation/loss_abs":loss_abs,"vit_ln_mlp_up_gelu_validation/grad_max_abs":grad_abs,"vit_ln_mlp_up_gelu_validation/grad_rel_l2":grad_rel,"vit_ln_mlp_up_gelu_validation/calls":float(len(diffs))}
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
@@ -162,6 +179,15 @@ def lejepa_forward(self, batch, stage, cfg):
     # Replace NaN values with 0 (occurs at sequence boundaries)
     batch["action"] = torch.nan_to_num(batch["action"], 0.0)
 
+    base_model=getattr(self.model,"_orig_mod",self.model);vit_layers=base_model._lewm_vit_mlp_up_layers
+    vit_mode=str(cfg.model.encoder.get("mlp_up_implementation","eager"));eager_encoder_output=None
+    if self.training and vit_mode=="validate":
+        cpu_rng=torch.random.get_rng_state();cuda_rng=torch.cuda.get_rng_state(batch["pixels"].device)
+        for layer in vit_layers: layer._lewm_mlp_up_mode="eager"
+        eager_batch={k:(v.clone() if torch.is_tensor(v) else v) for k,v in batch.items()}
+        eager_encoder_output=self.model.encode(eager_batch)
+        torch.random.set_rng_state(cpu_rng);torch.cuda.set_rng_state(cuda_rng,batch["pixels"].device)
+        for layer in vit_layers: layer._lewm_mlp_up_mode="validate";layer._lewm_mlp_up_records.clear()
     output = self.model.encode(batch)
 
     emb = output["emb"]  # (B, T, D)
@@ -190,6 +216,12 @@ def lejepa_forward(self, batch, stage, cfg):
         predictor.set_dual_layernorm_adaln_implementation("validate" if predictor_mode == "validate" else predictor_mode)
         predictor.set_gated_residual_gemm_implementation("validate" if gated_mode == "validate" else gated_mode)
         predictor.set_exact_gelu_dropout_gemm_implementation("validate" if gelu_mode == "validate" else gelu_mode)
+    eager_vit_pred=None
+    if eager_encoder_output is not None:
+        eager_ctx=eager_encoder_output["emb"][:,:ctx_len];eager_act=eager_encoder_output["act_emb"][:,:ctx_len]
+        cpu_rng=torch.random.get_rng_state();cuda_rng=torch.cuda.get_rng_state(ctx_emb.device)
+        eager_vit_pred=self.model.predict(eager_ctx,eager_act)
+        torch.random.set_rng_state(cpu_rng);torch.cuda.set_rng_state(cuda_rng,ctx_emb.device)
     pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
 
     # LeWM loss
@@ -197,6 +229,13 @@ def lejepa_forward(self, batch, stage, cfg):
     is_training = self.training
     output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1), validate=is_training)
     output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
+
+    if eager_encoder_output is not None:
+        eager_emb=eager_encoder_output["emb"];eager_tgt=eager_emb[:,n_preds:]
+        eager_pred_loss=(eager_vit_pred-eager_tgt).pow(2).mean();eager_total=eager_pred_loss+lambd*self.sigreg(eager_emb.transpose(0,1),validate=False)
+        metrics=compare_vit_mlp_up_kernel(self,vit_layers,eager_emb,emb,eager_total,output["loss"],cfg.kernels.vit_layernorm_exact_gelu_mlp_up.validation)
+        self.log_dict(metrics,on_step=True,on_epoch=False,sync_dist=False)
+        print(f"ViT MLP-up kernel training validation: metrics={metrics}, module={load_vit_layernorm_exact_gelu_mlp_up_kernel().__file__}")
 
     if eager_pred_emb is not None:
         eager_pred_loss = (eager_pred_emb - tgt_emb).pow(2).mean()
@@ -354,7 +393,13 @@ def run(cfg):
         ##       model / optim      ##
         ##############################
 
-        world_model = hydra.utils.instantiate(cfg.model)
+        encoder_mode=str(cfg.model.encoder.get("mlp_up_implementation", "eager"))
+        encoder_kernel_repo=str(cfg.model.encoder.get("mlp_up_kernel_repo_id", cfg.kernels.vit_layernorm_exact_gelu_mlp_up.repo_id))
+        model_cfg=OmegaConf.create(OmegaConf.to_container(cfg.model,resolve=True))
+        model_cfg.encoder.pop("mlp_up_implementation",None);model_cfg.encoder.pop("mlp_up_kernel_repo_id",None)
+        world_model = hydra.utils.instantiate(model_cfg)
+        world_model._lewm_vit_mlp_up_layers=configure_vit_layernorm_exact_gelu_mlp_up(
+            world_model.encoder,encoder_mode,encoder_kernel_repo)
         if cfg.get("compile", True):
             print("⚡ Compiling base model with torch.compile...")
             world_model = torch.compile(world_model)
