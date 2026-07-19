@@ -55,6 +55,16 @@ kernels:
       loss_atol: 1.0e-2
       grad_atol: 3.0e-1
       grad_rtol: 4.0e-2
+  predictor_exact_gelu_dropout_gemm:
+    repo_id: mlengineer-ai/predictor-exact-gelu-dropout-gemm
+    release: v1
+    local_path: /home/mehran/.local/share/lewm-kernels/predictor-exact-gelu-dropout-gemm/v1/build/torch212-cxx11-cu133-x86_64-linux
+    validation:
+      output_atol: 0.0
+      downstream_atol: 0.0
+      loss_atol: 0.0
+      grad_atol: 8.0e-3
+      grad_rtol: 2.0e-2
 
 trainer:
   max_epochs: 100

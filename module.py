@@ -12,8 +12,26 @@ SIGREG_KERNEL_REPO = "mlengineer-ai/sigreg-characteristic-statistic"
 PROJECTION_NORMALIZATION_KERNEL_REPO = "mlengineer-ai/projection-column-normalization"
 PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO = "mlengineer-ai/predictor-dual-layernorm-adaln"
 PREDICTOR_GATED_RESIDUAL_GEMM_KERNEL_REPO = "mlengineer-ai/predictor-gated-residual-gemm"
+PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO = "mlengineer-ai/predictor-exact-gelu-dropout-gemm"
 _PREDICTOR_KERNEL = None
 _PREDICTOR_GATED_RESIDUAL_KERNEL = None
+_PREDICTOR_EXACT_GELU_DROPOUT_KERNEL = None
+
+def load_predictor_exact_gelu_dropout_kernel(repo_id=PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO):
+    global _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL
+    if _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL is not None: return _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL
+    overrides = dict(entry.split("=", 1) for entry in os.environ.get("LOCAL_KERNELS", "").split(os.pathsep) if "=" in entry)
+    kernel_path = Path(overrides.get(repo_id, "")); init_path = kernel_path / "__init__.py"
+    if not init_path.is_file(): raise RuntimeError(f"Fused predictor exact-GELU dropout GEMM requested but artifact is unavailable: {init_path}")
+    module_name = "lewm_predictor_exact_gelu_dropout_gemm"
+    if module_name in sys.modules:
+        _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL = sys.modules[module_name]; return _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL
+    spec = importlib.util.spec_from_file_location(module_name, init_path, submodule_search_locations=[str(kernel_path)])
+    if spec is None or spec.loader is None: raise RuntimeError(f"Cannot load predictor exact-GELU dropout kernel from {init_path}")
+    module = importlib.util.module_from_spec(spec); sys.modules[module_name] = module; spec.loader.exec_module(module)
+    _PREDICTOR_EXACT_GELU_DROPOUT_KERNEL = module
+    print(f"Loaded predictor exact-GELU dropout GEMM ABI3 module from {module.__file__}")
+    return module
 
 def load_predictor_kernel(repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO):
     global _PREDICTOR_KERNEL
@@ -270,7 +288,8 @@ class SIGReg(torch.nn.Module):
 class FeedForward(nn.Module):
     """FeedForward network used in Transformers"""
 
-    def __init__(self, dim, hidden_dim, dropout=0.0):
+    def __init__(self, dim, hidden_dim, dropout=0.0, exact_gelu_dropout_gemm_implementation="eager",
+                 exact_gelu_dropout_gemm_kernel_repo_id=PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO):
         super().__init__()
         self.net = nn.Sequential(
             nn.LayerNorm(dim),
@@ -280,6 +299,10 @@ class FeedForward(nn.Module):
             nn.Linear(hidden_dim, dim),
             nn.Dropout(dropout),
         )
+        if exact_gelu_dropout_gemm_implementation not in {"eager", "fused", "validate"}: raise ValueError(exact_gelu_dropout_gemm_implementation)
+        self.exact_gelu_dropout_gemm_implementation = exact_gelu_dropout_gemm_implementation
+        self.exact_gelu_dropout_gemm_kernel_repo_id = exact_gelu_dropout_gemm_kernel_repo_id
+        self.exact_gelu_dropout_gemm_validation_records = []
 
     def forward(self, x):
         return self.net(x)
@@ -289,8 +312,18 @@ class FeedForward(nn.Module):
         return x
 
     def forward_pre_output(self, x):
-        for layer in self.net[1:4]: x = layer(x)
-        return x
+        if self.exact_gelu_dropout_gemm_implementation == "eager":
+            for layer in self.net[1:4]: x = layer(x)
+            return x
+        linear, dropout = self.net[1], self.net[3]
+        kernel = load_predictor_exact_gelu_dropout_kernel(self.exact_gelu_dropout_gemm_kernel_repo_id)
+        if self.exact_gelu_dropout_gemm_implementation == "validate":
+            state = torch.cuda.get_rng_state(x.device)
+            eager = dropout(self.net[2](linear(x)))
+            torch.cuda.set_rng_state(state, x.device)
+        fused = kernel.exact_gelu_dropout_linear(x, linear.weight, linear.bias, dropout.p, self.training)
+        if self.exact_gelu_dropout_gemm_implementation == "validate": self.exact_gelu_dropout_gemm_validation_records.append((eager, fused))
+        return fused
 
 
 class Attention(nn.Module):
@@ -338,11 +371,15 @@ class ConditionalBlock(nn.Module):
                  dual_layernorm_adaln_implementation="eager",
                  dual_layernorm_adaln_kernel_repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO,
                  gated_residual_gemm_implementation="eager",
-                 gated_residual_gemm_kernel_repo_id=PREDICTOR_GATED_RESIDUAL_GEMM_KERNEL_REPO):
+                 gated_residual_gemm_kernel_repo_id=PREDICTOR_GATED_RESIDUAL_GEMM_KERNEL_REPO,
+                 exact_gelu_dropout_gemm_implementation="eager",
+                 exact_gelu_dropout_gemm_kernel_repo_id=PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO):
         super().__init__()
 
         self.attn = Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
-        self.mlp = FeedForward(dim, mlp_dim, dropout=dropout)
+        self.mlp = FeedForward(dim, mlp_dim, dropout=dropout,
+            exact_gelu_dropout_gemm_implementation=exact_gelu_dropout_gemm_implementation,
+            exact_gelu_dropout_gemm_kernel_repo_id=exact_gelu_dropout_gemm_kernel_repo_id)
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.adaLN_modulation = nn.Sequential(
@@ -436,6 +473,8 @@ class Transformer(nn.Module):
         dual_layernorm_adaln_kernel_repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO,
         gated_residual_gemm_implementation="eager",
         gated_residual_gemm_kernel_repo_id=PREDICTOR_GATED_RESIDUAL_GEMM_KERNEL_REPO,
+        exact_gelu_dropout_gemm_implementation="eager",
+        exact_gelu_dropout_gemm_kernel_repo_id=PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO,
     ):
         super().__init__()
         self.norm = nn.LayerNorm(hidden_dim)
@@ -465,7 +504,9 @@ class Transformer(nn.Module):
                     dual_layernorm_adaln_implementation=dual_layernorm_adaln_implementation,
                     dual_layernorm_adaln_kernel_repo_id=dual_layernorm_adaln_kernel_repo_id,
                     gated_residual_gemm_implementation=gated_residual_gemm_implementation,
-                    gated_residual_gemm_kernel_repo_id=gated_residual_gemm_kernel_repo_id)
+                    gated_residual_gemm_kernel_repo_id=gated_residual_gemm_kernel_repo_id,
+                    exact_gelu_dropout_gemm_implementation=exact_gelu_dropout_gemm_implementation,
+                    exact_gelu_dropout_gemm_kernel_repo_id=exact_gelu_dropout_gemm_kernel_repo_id)
                 if block_class is ConditionalBlock else
                 block_class(hidden_dim, heads, dim_head, mlp_dim, dropout)
             )
@@ -561,6 +602,8 @@ class ARPredictor(nn.Module):
         dual_layernorm_adaln_kernel_repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO,
         gated_residual_gemm_implementation="eager",
         gated_residual_gemm_kernel_repo_id=PREDICTOR_GATED_RESIDUAL_GEMM_KERNEL_REPO,
+        exact_gelu_dropout_gemm_implementation="eager",
+        exact_gelu_dropout_gemm_kernel_repo_id=PREDICTOR_EXACT_GELU_DROPOUT_GEMM_KERNEL_REPO,
     ):
         super().__init__()
         self.pos_embedding = nn.Parameter(torch.randn(1, num_frames, input_dim))
@@ -579,6 +622,8 @@ class ARPredictor(nn.Module):
             dual_layernorm_adaln_kernel_repo_id=dual_layernorm_adaln_kernel_repo_id,
             gated_residual_gemm_implementation=gated_residual_gemm_implementation,
             gated_residual_gemm_kernel_repo_id=gated_residual_gemm_kernel_repo_id,
+            exact_gelu_dropout_gemm_implementation=exact_gelu_dropout_gemm_implementation,
+            exact_gelu_dropout_gemm_kernel_repo_id=exact_gelu_dropout_gemm_kernel_repo_id,
         )
 
     def set_dual_layernorm_adaln_implementation(self, implementation):
@@ -600,6 +645,16 @@ class ARPredictor(nn.Module):
 
     def gated_residual_gemm_validation_records(self):
         return [pair for block in self.transformer.layers for pair in block.gated_residual_gemm_validation_records]
+
+    def set_exact_gelu_dropout_gemm_implementation(self, implementation):
+        if implementation not in {"eager", "fused", "validate"}: raise ValueError(implementation)
+        for block in self.transformer.layers: block.mlp.exact_gelu_dropout_gemm_implementation = implementation
+
+    def clear_exact_gelu_dropout_gemm_validation_records(self):
+        for block in self.transformer.layers: block.mlp.exact_gelu_dropout_gemm_validation_records.clear()
+
+    def exact_gelu_dropout_gemm_validation_records(self):
+        return [pair for block in self.transformer.layers for pair in block.mlp.exact_gelu_dropout_gemm_validation_records]
 
     def forward(self, x, c):
         """
