@@ -27,6 +27,14 @@ kernels:
       loss_atol: 1.0e-4
       grad_atol: 1.0e-3
       grad_rtol: 1.0e-2
+  projection_normalization:
+    repo_id: mlengineer-ai/projection-column-normalization
+    release: v1
+    local_path: /home/mehran/Documents/GitHub/mlengineer-ai/projection-column-normalization/build/torch212-cxx11-cu133-x86_64-linux
+    validation:
+      loss_atol: 6.0e-4
+      grad_atol: 1.0e-3
+      grad_rtol: 1.0e-2
 
 trainer:
   max_epochs: 100
@@ -61,3 +69,6 @@ loss:
       implementation: fused
       kernel_repo_id: ${kernels.sigreg.repo_id}
       validation_steps: 0
+      normalization_implementation: eager
+      normalization_kernel_repo_id: ${kernels.projection_normalization.repo_id}
+      normalization_validation_steps: 0

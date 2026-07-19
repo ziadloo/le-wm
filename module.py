@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 SIGREG_KERNEL_REPO = "mlengineer-ai/sigreg-characteristic-statistic"
+PROJECTION_NORMALIZATION_KERNEL_REPO = "mlengineer-ai/projection-column-normalization"
 
 def modulate(x, shift, scale):
     """AdaLN-zero modulation"""
@@ -24,19 +25,33 @@ class SIGReg(torch.nn.Module):
         implementation="eager",
         kernel_repo_id=SIGREG_KERNEL_REPO,
         validation_steps=0,
+        normalization_implementation="eager",
+        normalization_kernel_repo_id=PROJECTION_NORMALIZATION_KERNEL_REPO,
+        normalization_validation_steps=0,
     ):
         super().__init__()
         if implementation not in {"eager", "fused", "validate"}:
             raise ValueError(f"Unknown SIGReg implementation: {implementation}")
+        if normalization_implementation not in {"eager", "fused", "validate"}:
+            raise ValueError(
+                f"Unknown projection normalization implementation: {normalization_implementation}"
+            )
         self.num_proj = num_proj
         self.implementation = implementation
         self.kernel_repo_id = kernel_repo_id
         self.validation_steps = validation_steps
+        self.normalization_implementation = normalization_implementation
+        self.normalization_kernel_repo_id = normalization_kernel_repo_id
+        self.normalization_validation_steps = normalization_validation_steps
         self.validation_calls = 0
+        self.normalization_validation_calls = 0
         self.comparison_active = False
+        self.normalization_comparison_active = False
         self.validation_eager_loss = None
         self._contract_reported = False
         self._kernel = None
+        self._normalization_contract_reported = False
+        self._normalization_kernel = None
         t = torch.linspace(0, 3, knots, dtype=torch.float32)
         dt = 3 / (knots - 1)
         weights = torch.full((knots,), 2 * dt, dtype=torch.float32)
@@ -66,6 +81,9 @@ class SIGReg(torch.nn.Module):
                     f"expected {init_path}"
                 )
             module_name = "lewm_sigreg_characteristic_statistic"
+            if module_name in sys.modules:
+                self._kernel = sys.modules[module_name]
+                return self._kernel
             spec = importlib.util.spec_from_file_location(
                 module_name,
                 init_path,
@@ -78,6 +96,52 @@ class SIGReg(torch.nn.Module):
             spec.loader.exec_module(module)
             self._kernel = module
         return self._kernel
+
+    def _load_normalization_kernel(self):
+        if self._normalization_kernel is None:
+            overrides = dict(
+                entry.split("=", 1)
+                for entry in os.environ.get("LOCAL_KERNELS", "").split(os.pathsep)
+                if "=" in entry
+            )
+            kernel_path = Path(overrides.get(self.normalization_kernel_repo_id, ""))
+            init_path = kernel_path / "__init__.py"
+            if not init_path.is_file():
+                raise RuntimeError(
+                    "No local projection normalization kernel package for "
+                    f"{self.normalization_kernel_repo_id!r}; expected {init_path}"
+                )
+            module_name = "lewm_projection_column_normalization"
+            if module_name in sys.modules:
+                self._normalization_kernel = sys.modules[module_name]
+                return self._normalization_kernel
+            spec = importlib.util.spec_from_file_location(
+                module_name,
+                init_path,
+                submodule_search_locations=[str(kernel_path)],
+            )
+            if spec is None or spec.loader is None:
+                raise RuntimeError(
+                    f"Cannot load local projection normalization kernel from {init_path}"
+                )
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            self._normalization_kernel = module
+        return self._normalization_kernel
+
+    def _normalize_projection_columns(self, projection):
+        if self.normalization_implementation == "eager":
+            return projection.div_(projection.norm(p=2, dim=0))
+        kernel = self._load_normalization_kernel()
+        if not self._normalization_contract_reported:
+            print(
+                "Projection normalization kernel contract: "
+                f"A={tuple(projection.shape)} {projection.dtype} "
+                f"contiguous={projection.is_contiguous()}, module={kernel.__file__}"
+            )
+            self._normalization_contract_reported = True
+        return kernel.normalize_projection_columns(projection, eps=0.0)
 
     def _validate_contract(self, y):
         if y.ndim != 3:
@@ -106,14 +170,47 @@ class SIGReg(torch.nn.Module):
         proj: (T, B, D)
         """
         # sample random projections
-        A = torch.randn(proj.size(-1), self.num_proj, device=proj.device, dtype=proj.dtype)
-        A = A.div_(A.norm(p=2, dim=0))
+        A_raw = torch.randn(proj.size(-1), self.num_proj, device=proj.device, dtype=proj.dtype)
+        validate_normalization = (
+            self.normalization_implementation == "validate"
+            and validate
+            and self.normalization_validation_calls < self.normalization_validation_steps
+        )
+        eager_A = A_raw / A_raw.norm(p=2, dim=0) if validate_normalization else None
+        A = self._normalize_projection_columns(A_raw)
         y = (proj @ A).permute(1, 0, 2).contiguous()
+        eager_y = (
+            (proj @ eager_A).permute(1, 0, 2).contiguous()
+            if eager_A is not None
+            else None
+        )
 
         self.comparison_active = False
+        self.normalization_comparison_active = False
         self.validation_eager_loss = None
+        if validate_normalization:
+            matrix_diff = (A.float() - eager_A.float()).abs()
+            projection_diff = (y.float() - eager_y.float()).abs()
+            matrix_max_abs = matrix_diff.max().item()
+            projection_max_abs = projection_diff.max().item()
+            if matrix_max_abs > 2e-2 or projection_max_abs > 0.25:
+                raise RuntimeError(
+                    "Projection normalization mismatch: "
+                    f"matrix_max_abs={matrix_max_abs}, projection_max_abs={projection_max_abs}"
+                )
+            self.normalization_validation_calls += 1
+            self.normalization_comparison_active = True
+            print(
+                f"Projection normalization validation {self.normalization_validation_calls}: "
+                f"matrix_max_abs={matrix_max_abs}, projection_max_abs={projection_max_abs}"
+            )
+
         if self.implementation == "eager":
-            return self._eager_statistic(y)
+            loss = self._eager_statistic(y)
+            if validate_normalization:
+                self.validation_eager_loss = self._eager_statistic(eager_y)
+                self.comparison_active = True
+            return loss
 
         self._validate_contract(y)
         fused_loss = self._load_kernel().sigreg_statistic(y, self.t, self.phi, self.weights)
@@ -123,9 +220,14 @@ class SIGReg(torch.nn.Module):
             and self.validation_calls < self.validation_steps
         )
         if should_compare:
-            self.validation_eager_loss = self._eager_statistic(y)
+            self.validation_eager_loss = self._eager_statistic(
+                eager_y if eager_y is not None else y
+            )
             self.comparison_active = True
             self.validation_calls += 1
+        elif validate_normalization:
+            self.validation_eager_loss = self._eager_statistic(eager_y)
+            self.comparison_active = True
         return fused_loss
     
 class FeedForward(nn.Module):

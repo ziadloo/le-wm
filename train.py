@@ -35,22 +35,28 @@ from clearml import Task
 
 
 def configure_local_kernels(cfg):
-    kernel_cfg = cfg.get("kernels", {}).get("sigreg", {})
-    local_path = kernel_cfg.get("local_path")
-    repo_id = kernel_cfg.get("repo_id")
-    if not local_path or not repo_id:
+    overrides = []
+    for name, kernel_cfg in cfg.get("kernels", {}).items():
+        local_path = kernel_cfg.get("local_path")
+        repo_id = kernel_cfg.get("repo_id")
+        if not local_path or not repo_id:
+            continue
+        variant = Path(str(local_path))
+        metadata = variant / "metadata.json"
+        if not metadata.is_file():
+            raise FileNotFoundError(f"Local {name} kernel metadata not found: {metadata}")
+        overrides.append(f"{repo_id}={variant}")
+    if not overrides:
         return
-    variant = Path(str(local_path))
-    metadata = variant / "metadata.json"
-    if not metadata.is_file():
-        raise FileNotFoundError(f"Local SIGReg kernel metadata not found: {metadata}")
-    override = f"{repo_id}={variant}"
     existing = os.environ.get("LOCAL_KERNELS")
-    os.environ["LOCAL_KERNELS"] = f"{existing}:{override}" if existing else override
+    configured = os.pathsep.join(overrides)
+    os.environ["LOCAL_KERNELS"] = (
+        f"{existing}{os.pathsep}{configured}" if existing else configured
+    )
     print(f"Configured LOCAL_KERNELS={os.environ['LOCAL_KERNELS']}")
 
 
-def compare_training_gradients(module, eager_loss, fused_loss, cfg):
+def compare_training_gradients(module, eager_loss, fused_loss, tolerances):
     named_params = [(name, p) for name, p in module.model.named_parameters() if p.requires_grad]
     params = [p for _, p in named_params]
     eager_grads = torch.autograd.grad(eager_loss, params, retain_graph=True, allow_unused=True)
@@ -75,7 +81,6 @@ def compare_training_gradients(module, eager_loss, fused_loss, cfg):
 
     loss_abs = (eager_loss.detach() - fused_loss.detach()).abs().item()
     grad_rel_l2 = (diff_sq.sqrt() / eager_sq.sqrt().clamp_min(1e-12)).item()
-    tolerances = cfg.kernels.sigreg.validation
     if loss_abs > tolerances.loss_atol:
         raise RuntimeError(f"SIGReg loss mismatch {loss_abs} exceeds {tolerances.loss_atol}")
     if max_abs > tolerances.grad_atol and grad_rel_l2 > tolerances.grad_rtol:
@@ -119,9 +124,21 @@ def lejepa_forward(self, batch, stage, cfg):
 
     if is_training and self.sigreg.comparison_active:
         eager_total = output["pred_loss"] + lambd * self.sigreg.validation_eager_loss
-        metrics = compare_training_gradients(self, eager_total, output["loss"], cfg)
+        tolerances = (
+            cfg.kernels.projection_normalization.validation
+            if self.sigreg.normalization_comparison_active
+            else cfg.kernels.sigreg.validation
+        )
+        metrics = compare_training_gradients(
+            self, eager_total, output["loss"], tolerances
+        )
         self.log_dict(metrics, on_step=True, on_epoch=False, sync_dist=False)
-        print(f"SIGReg training-step validation {self.sigreg.validation_calls}: {metrics}")
+        print(
+            "Kernel training-step validation: "
+            f"sigreg_calls={self.sigreg.validation_calls}, "
+            f"normalization_calls={self.sigreg.normalization_validation_calls}, "
+            f"metrics={metrics}"
+        )
 
     if stage in ["validate", "val"]:
         losses_epoch = {f"validate_epoch/{k}_epoch": v.detach() for k, v in output.items() if "loss" in k}

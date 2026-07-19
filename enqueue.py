@@ -54,6 +54,8 @@ PRESETS = {
             "epoch_interval": 1,
             "loss.sigreg.kwargs.implementation": "validate",
             "loss.sigreg.kwargs.validation_steps": 5,
+            "loss.sigreg.kwargs.normalization_implementation": "validate",
+            "loss.sigreg.kwargs.normalization_validation_steps": 5,
         },
         "tags": ["kernel-validation", "sigreg", "v1", "pusht", "bf16-mixed"],
         "packages": DEFAULT_TRAIN_PACKAGES,
