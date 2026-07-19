@@ -45,6 +45,16 @@ kernels:
       loss_atol: 5.0e-3
       grad_atol: 8.0e-2
       grad_rtol: 2.0e-2
+  predictor_gated_residual_gemm:
+    repo_id: mlengineer-ai/predictor-gated-residual-gemm
+    release: v1
+    local_path: /home/mehran/.local/share/lewm-kernels/predictor-gated-residual-gemm/v1/build/torch212-cxx11-cu133-x86_64-linux
+    validation:
+      output_atol: 1.25e-1
+      downstream_atol: 2.5e-1
+      loss_atol: 1.0e-2
+      grad_atol: 3.0e-1
+      grad_rtol: 4.0e-2
 
 trainer:
   max_epochs: 100

@@ -29,7 +29,7 @@ import torch
 from lightning.pytorch.loggers import WandbLogger, TensorBoardLogger
 from omegaconf import OmegaConf, open_dict
 
-from module import SIGReg, load_predictor_kernel
+from module import SIGReg, load_predictor_kernel, load_predictor_gated_residual_kernel
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 from clearml import Task
 
@@ -120,6 +120,22 @@ def compare_predictor_kernel(module, eager_pred, fused_pred, eager_loss, fused_l
             "predictor_dual_ln_adaln_validation/grad_rel_l2": grad_rel,
             "predictor_dual_ln_adaln_validation/calls": float(len(direct))}
 
+def compare_gated_residual_kernel(module,eager_pred,fused_pred,eager_loss,fused_loss,predictor,tolerances):
+    direct=[(a.float()-b.float()).abs().max() for a,b in predictor.gated_residual_gemm_validation_records()]
+    direct_max=torch.stack(direct).max().item() if direct else float("inf")
+    downstream_max=(eager_pred.float()-fused_pred.float()).abs().max().item();loss_abs=(eager_loss.detach()-fused_loss.detach()).abs().item()
+    params=[p for p in predictor.parameters() if p.requires_grad]
+    refs=torch.autograd.grad(eager_loss,params,retain_graph=True,allow_unused=True)
+    deltas=torch.autograd.grad(eager_loss-fused_loss,params,retain_graph=True,allow_unused=True)
+    grad_abs=0.;ds=torch.zeros((),device=fused_loss.device);rs=torch.zeros_like(ds)
+    for ref,delta in zip(refs,deltas):
+        if ref is None: continue
+        delta=torch.zeros_like(ref) if delta is None else delta;grad_abs=max(grad_abs,delta.float().abs().max().item());ds+=delta.float().square().sum();rs+=ref.float().square().sum()
+    grad_rel=(ds.sqrt()/rs.sqrt().clamp_min(1e-12)).item()
+    if direct_max>tolerances.output_atol or downstream_max>tolerances.downstream_atol or loss_abs>tolerances.loss_atol or (grad_abs>tolerances.grad_atol and grad_rel>tolerances.grad_rtol):
+        raise RuntimeError(f"Predictor gated residual GEMM mismatch direct={direct_max} downstream={downstream_max} loss={loss_abs} grad_abs={grad_abs} grad_rel={grad_rel}")
+    return {"predictor_gated_residual_gemm_validation/direct_max_abs":direct_max,"predictor_gated_residual_gemm_validation/downstream_max_abs":downstream_max,"predictor_gated_residual_gemm_validation/loss_abs":loss_abs,"predictor_gated_residual_gemm_validation/grad_max_abs":grad_abs,"predictor_gated_residual_gemm_validation/grad_rel_l2":grad_rel,"predictor_gated_residual_gemm_validation/calls":float(len(direct))}
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
@@ -142,14 +158,18 @@ def lejepa_forward(self, batch, stage, cfg):
     base_model = getattr(self.model, "_orig_mod", self.model)
     predictor = base_model.predictor
     predictor_mode = cfg.model.predictor.get("dual_layernorm_adaln_implementation", "eager")
+    gated_mode = cfg.model.predictor.get("gated_residual_gemm_implementation", "eager")
     eager_pred_emb = None
-    if self.training and predictor_mode == "validate":
+    if self.training and (predictor_mode == "validate" or gated_mode == "validate"):
         cpu_rng = torch.random.get_rng_state(); cuda_rng = torch.cuda.get_rng_state(ctx_emb.device)
         predictor.set_dual_layernorm_adaln_implementation("eager")
+        predictor.set_gated_residual_gemm_implementation("eager")
         eager_pred_emb = self.model.predict(ctx_emb, ctx_act)
         torch.random.set_rng_state(cpu_rng); torch.cuda.set_rng_state(cuda_rng, ctx_emb.device)
         predictor.clear_dual_layernorm_adaln_validation_records()
+        predictor.clear_gated_residual_gemm_validation_records()
         predictor.set_dual_layernorm_adaln_implementation("validate")
+        predictor.set_gated_residual_gemm_implementation("validate" if gated_mode == "validate" else gated_mode)
     pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
 
     # LeWM loss
@@ -160,10 +180,14 @@ def lejepa_forward(self, batch, stage, cfg):
 
     if eager_pred_emb is not None:
         eager_pred_loss = (eager_pred_emb - tgt_emb).pow(2).mean()
-        metrics = compare_predictor_kernel(self, eager_pred_emb, pred_emb, eager_pred_loss,
-            output["pred_loss"], predictor, cfg.kernels.predictor_dual_layernorm_adaln.validation)
+        if gated_mode == "validate":
+            metrics=compare_gated_residual_kernel(self,eager_pred_emb,pred_emb,eager_pred_loss,output["pred_loss"],predictor,cfg.kernels.predictor_gated_residual_gemm.validation)
+            loaded=load_predictor_gated_residual_kernel().__file__
+        else:
+            metrics = compare_predictor_kernel(self, eager_pred_emb, pred_emb, eager_pred_loss,
+                output["pred_loss"], predictor, cfg.kernels.predictor_dual_layernorm_adaln.validation); loaded=load_predictor_kernel().__file__
         self.log_dict(metrics, on_step=True, on_epoch=False, sync_dist=False)
-        print(f"Predictor dual-LayerNorm AdaLN training validation: metrics={metrics}, module={load_predictor_kernel().__file__}")
+        print(f"Predictor kernel training validation: metrics={metrics}, module={loaded}")
 
     if is_training and self.sigreg.comparison_active:
         eager_total = output["pred_loss"] + lambd * self.sigreg.validation_eager_loss
