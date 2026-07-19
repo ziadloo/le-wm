@@ -34,6 +34,16 @@ def load_vit_layernorm_exact_gelu_mlp_up_kernel(repo_id=VIT_LAYERNORM_EXACT_GELU
     print(f"Loaded ViT LayerNorm exact-GELU MLP-up ABI3 module from {module.__file__}");return module
 
 def _vit_layer_forward(self,hidden_states,attention_mask=None,**kwargs):
+    if self._lewm_mlp_up_layout=="legacy":
+        attention_output=self.attention(self.layernorm_before(hidden_states),attention_mask)
+        hidden_states=attention_output+hidden_states;mode=self._lewm_mlp_up_mode
+        if mode=="eager": up=self.intermediate(self.layernorm_after(hidden_states))
+        else:
+            if mode=="validate": eager=self.intermediate(self.layernorm_after(hidden_states))
+            ln=self.layernorm_after;fc1=self.intermediate.dense
+            up=load_vit_layernorm_exact_gelu_mlp_up_kernel(self._lewm_mlp_up_repo).vit_layernorm_exact_gelu_mlp_up(hidden_states,ln.weight,ln.bias,fc1.weight,fc1.bias,ln.eps)
+            if mode=="validate": self._lewm_mlp_up_records.append((eager,up))
+        return self.output(up,hidden_states)
     residual=hidden_states;hidden_states=self.layernorm_before(hidden_states)
     hidden_states,_=self.attention(hidden_states,attention_mask,**kwargs);hidden_states=self.dropout(hidden_states);hidden_states=hidden_states+residual
     residual=hidden_states; mode=self._lewm_mlp_up_mode
@@ -51,8 +61,9 @@ def configure_vit_layernorm_exact_gelu_mlp_up(encoder,implementation="eager",ker
     if implementation not in {"eager","fused","validate"}: raise ValueError(f"Unknown ViT MLP-up implementation: {implementation}")
     layers=[]
     for layer in encoder.modules():
-        if type(layer).__name__=="ViTLayer" and hasattr(layer,"layernorm_after") and hasattr(layer,"mlp"):
+        if type(layer).__name__=="ViTLayer" and hasattr(layer,"layernorm_after") and (hasattr(layer,"mlp") or hasattr(layer,"intermediate")):
             layer._lewm_mlp_up_mode=implementation;layer._lewm_mlp_up_repo=kernel_repo_id;layer._lewm_mlp_up_records=[]
+            layer._lewm_mlp_up_layout="modern" if hasattr(layer,"mlp") else "legacy"
             layer.forward=types.MethodType(_vit_layer_forward,layer);layers.append(layer)
     if not layers: raise RuntimeError("No compatible ViTLayer modules found for MLP-up kernel integration")
     if implementation in {"fused","validate"}: load_vit_layernorm_exact_gelu_mlp_up_kernel(kernel_repo_id)
