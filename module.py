@@ -42,7 +42,9 @@ def _vit_layer_forward(self,hidden_states,attention_mask=None,**kwargs):
             if mode=="validate": eager=self.intermediate(self.layernorm_after(hidden_states))
             ln=self.layernorm_after;fc1=self.intermediate.dense
             up=load_vit_layernorm_exact_gelu_mlp_up_kernel(self._lewm_mlp_up_repo).vit_layernorm_exact_gelu_mlp_up(hidden_states,ln.weight,ln.bias,fc1.weight,fc1.bias,ln.eps)
-            if mode=="validate": self._lewm_mlp_up_records.append((eager,up))
+            if mode=="validate":
+                self._lewm_mlp_up_records.append((eager.float()-up.float()).abs().max().detach())
+                if self._lewm_mlp_up_sample is None: self._lewm_mlp_up_sample=hidden_states.detach().reshape(-1,hidden_states.shape[-1])[:32].contiguous()
         return self.output(up,hidden_states)
     residual=hidden_states;hidden_states=self.layernorm_before(hidden_states)
     hidden_states,_=self.attention(hidden_states,attention_mask,**kwargs);hidden_states=self.dropout(hidden_states);hidden_states=hidden_states+residual
@@ -53,7 +55,9 @@ def _vit_layer_forward(self,hidden_states,attention_mask=None,**kwargs):
             eager=self.mlp.activation_fn(self.mlp.fc1(self.layernorm_after(hidden_states)))
         ln=self.layernorm_after;fc1=self.mlp.fc1
         fused=load_vit_layernorm_exact_gelu_mlp_up_kernel(self._lewm_mlp_up_repo).vit_layernorm_exact_gelu_mlp_up(hidden_states,ln.weight,ln.bias,fc1.weight,fc1.bias,ln.eps)
-        if mode=="validate": self._lewm_mlp_up_records.append((eager,fused))
+        if mode=="validate":
+            self._lewm_mlp_up_records.append((eager.float()-fused.float()).abs().max().detach())
+            if self._lewm_mlp_up_sample is None: self._lewm_mlp_up_sample=hidden_states.detach().reshape(-1,hidden_states.shape[-1])[:32].contiguous()
         hidden_states=self.mlp.fc2(fused)
     return self.dropout(hidden_states)+residual
 
@@ -62,7 +66,7 @@ def configure_vit_layernorm_exact_gelu_mlp_up(encoder,implementation="eager",ker
     layers=[]
     for layer in encoder.modules():
         if type(layer).__name__=="ViTLayer" and hasattr(layer,"layernorm_after") and (hasattr(layer,"mlp") or hasattr(layer,"intermediate")):
-            layer._lewm_mlp_up_mode=implementation;layer._lewm_mlp_up_repo=kernel_repo_id;layer._lewm_mlp_up_records=[]
+            layer._lewm_mlp_up_mode=implementation;layer._lewm_mlp_up_repo=kernel_repo_id;layer._lewm_mlp_up_records=[];layer._lewm_mlp_up_sample=None
             layer._lewm_mlp_up_layout="modern" if hasattr(layer,"mlp") else "legacy"
             layer.forward=types.MethodType(_vit_layer_forward,layer);layers.append(layer)
     if not layers: raise RuntimeError("No compatible ViTLayer modules found for MLP-up kernel integration")

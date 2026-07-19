@@ -155,11 +155,15 @@ def compare_exact_gelu_dropout_kernel(module,eager_pred,fused_pred,eager_loss,fu
     return {"predictor_exact_gelu_dropout_gemm_validation/direct_max_abs":direct_max,"predictor_exact_gelu_dropout_gemm_validation/downstream_max_abs":downstream_max,"predictor_exact_gelu_dropout_gemm_validation/loss_abs":loss_abs,"predictor_exact_gelu_dropout_gemm_validation/grad_max_abs":grad_abs,"predictor_exact_gelu_dropout_gemm_validation/grad_rel_l2":grad_rel,"predictor_exact_gelu_dropout_gemm_validation/calls":float(len(direct))}
 
 def compare_vit_mlp_up_kernel(module,layers,eager_emb,fused_emb,eager_loss,fused_loss,tolerances):
-    diffs=[(a.float()-b.float()).abs().max() for layer in layers for a,b in layer._lewm_mlp_up_records]
+    diffs=[d for layer in layers for d in layer._lewm_mlp_up_records]
     direct_max=torch.stack(diffs).max().item() if diffs else float("inf")
     downstream_max=(eager_emb.float()-fused_emb.float()).abs().max().item();loss_abs=(eager_loss.detach()-fused_loss.detach()).abs().item()
-    params=[p for p in module.model.encoder.parameters() if p.requires_grad]
-    refs=torch.autograd.grad(eager_loss,params,retain_graph=True,allow_unused=True);deltas=torch.autograd.grad(eager_loss-fused_loss,params,retain_graph=True,allow_unused=True)
+    layer=layers[0];x=layer._lewm_mlp_up_sample.detach().requires_grad_(True);ln=layer.layernorm_after
+    fc1=layer.mlp.fc1 if layer._lewm_mlp_up_layout=="modern" else layer.intermediate.dense
+    act=layer.mlp.activation_fn if layer._lewm_mlp_up_layout=="modern" else layer.intermediate.intermediate_act_fn
+    eager=act(fc1(ln(x)));fused=load_vit_layernorm_exact_gelu_mlp_up_kernel().vit_layernorm_exact_gelu_mlp_up(x,ln.weight,ln.bias,fc1.weight,fc1.bias,ln.eps)
+    params=[x,ln.weight,ln.bias,fc1.weight,fc1.bias]
+    refs=torch.autograd.grad(eager.float().square().mean(),params,retain_graph=True,allow_unused=True);deltas=torch.autograd.grad(eager.float().square().mean()-fused.float().square().mean(),params,retain_graph=True,allow_unused=True)
     grad_abs=0.;ds=torch.zeros((),device=fused_loss.device);rs=torch.zeros_like(ds)
     for ref,delta in zip(refs,deltas):
         if ref is None: continue
@@ -185,9 +189,9 @@ def lejepa_forward(self, batch, stage, cfg):
         cpu_rng=torch.random.get_rng_state();cuda_rng=torch.cuda.get_rng_state(batch["pixels"].device)
         for layer in vit_layers: layer._lewm_mlp_up_mode="eager"
         eager_batch={k:(v.clone() if torch.is_tensor(v) else v) for k,v in batch.items()}
-        eager_encoder_output=self.model.encode(eager_batch)
+        with torch.no_grad(): eager_encoder_output=self.model.encode(eager_batch)
         torch.random.set_rng_state(cpu_rng);torch.cuda.set_rng_state(cuda_rng,batch["pixels"].device)
-        for layer in vit_layers: layer._lewm_mlp_up_mode="validate";layer._lewm_mlp_up_records.clear()
+        for layer in vit_layers: layer._lewm_mlp_up_mode="validate";layer._lewm_mlp_up_records.clear();layer._lewm_mlp_up_sample=None
     output = self.model.encode(batch)
 
     emb = output["emb"]  # (B, T, D)
@@ -220,7 +224,7 @@ def lejepa_forward(self, batch, stage, cfg):
     if eager_encoder_output is not None:
         eager_ctx=eager_encoder_output["emb"][:,:ctx_len];eager_act=eager_encoder_output["act_emb"][:,:ctx_len]
         cpu_rng=torch.random.get_rng_state();cuda_rng=torch.cuda.get_rng_state(ctx_emb.device)
-        eager_vit_pred=self.model.predict(eager_ctx,eager_act)
+        with torch.no_grad(): eager_vit_pred=self.model.predict(eager_ctx,eager_act)
         torch.random.set_rng_state(cpu_rng);torch.cuda.set_rng_state(cuda_rng,ctx_emb.device)
     pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
 
@@ -232,7 +236,7 @@ def lejepa_forward(self, batch, stage, cfg):
 
     if eager_encoder_output is not None:
         eager_emb=eager_encoder_output["emb"];eager_tgt=eager_emb[:,n_preds:]
-        eager_pred_loss=(eager_vit_pred-eager_tgt).pow(2).mean();eager_total=eager_pred_loss+lambd*self.sigreg(eager_emb.transpose(0,1),validate=False)
+        with torch.no_grad(): eager_pred_loss=(eager_vit_pred-eager_tgt).pow(2).mean();eager_total=eager_pred_loss+lambd*self.sigreg(eager_emb.transpose(0,1),validate=False)
         metrics=compare_vit_mlp_up_kernel(self,vit_layers,eager_emb,emb,eager_total,output["loss"],cfg.kernels.vit_layernorm_exact_gelu_mlp_up.validation)
         self.log_dict(metrics,on_step=True,on_epoch=False,sync_dist=False)
         print(f"ViT MLP-up kernel training validation: metrics={metrics}, module={load_vit_layernorm_exact_gelu_mlp_up_kernel().__file__}")
