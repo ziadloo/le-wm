@@ -33,6 +33,63 @@ from module import SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 from clearml import Task
 
+
+def configure_local_kernels(cfg):
+    kernel_cfg = cfg.get("kernels", {}).get("sigreg", {})
+    local_path = kernel_cfg.get("local_path")
+    repo_id = kernel_cfg.get("repo_id")
+    if not local_path or not repo_id:
+        return
+    variant = Path(str(local_path))
+    metadata = variant / "metadata.json"
+    if not metadata.is_file():
+        raise FileNotFoundError(f"Local SIGReg kernel metadata not found: {metadata}")
+    override = f"{repo_id}={variant}"
+    existing = os.environ.get("LOCAL_KERNELS")
+    os.environ["LOCAL_KERNELS"] = f"{existing}:{override}" if existing else override
+    print(f"Configured LOCAL_KERNELS={os.environ['LOCAL_KERNELS']}")
+
+
+def compare_training_gradients(module, eager_loss, fused_loss, cfg):
+    named_params = [(name, p) for name, p in module.model.named_parameters() if p.requires_grad]
+    params = [p for _, p in named_params]
+    eager_grads = torch.autograd.grad(eager_loss, params, retain_graph=True, allow_unused=True)
+    delta_grads = torch.autograd.grad(
+        eager_loss - fused_loss, params, retain_graph=True, allow_unused=True
+    )
+
+    max_abs = 0.0
+    diff_sq = torch.zeros((), device=fused_loss.device)
+    eager_sq = torch.zeros((), device=fused_loss.device)
+    compared = 0
+    for (name, _), eager_grad, delta_grad in zip(named_params, eager_grads, delta_grads):
+        if eager_grad is None:
+            if delta_grad is not None:
+                raise RuntimeError(f"SIGReg gradient delta exists for unused parameter {name}")
+            continue
+        diff = torch.zeros_like(eager_grad, dtype=torch.float32) if delta_grad is None else delta_grad.float()
+        max_abs = max(max_abs, diff.abs().max().item())
+        diff_sq = diff_sq + diff.square().sum()
+        eager_sq = eager_sq + eager_grad.float().square().sum()
+        compared += 1
+
+    loss_abs = (eager_loss.detach() - fused_loss.detach()).abs().item()
+    grad_rel_l2 = (diff_sq.sqrt() / eager_sq.sqrt().clamp_min(1e-12)).item()
+    tolerances = cfg.kernels.sigreg.validation
+    if loss_abs > tolerances.loss_atol:
+        raise RuntimeError(f"SIGReg loss mismatch {loss_abs} exceeds {tolerances.loss_atol}")
+    if max_abs > tolerances.grad_atol and grad_rel_l2 > tolerances.grad_rtol:
+        raise RuntimeError(
+            f"SIGReg gradient mismatch max_abs={max_abs}, rel_l2={grad_rel_l2} "
+            f"exceeds atol={tolerances.grad_atol}, rtol={tolerances.grad_rtol}"
+        )
+    return {
+        "sigreg_validation/loss_abs": loss_abs,
+        "sigreg_validation/grad_max_abs": max_abs,
+        "sigreg_validation/grad_rel_l2": grad_rel_l2,
+        "sigreg_validation/parameters_compared": float(compared),
+    }
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
@@ -56,8 +113,15 @@ def lejepa_forward(self, batch, stage, cfg):
 
     # LeWM loss
     output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
-    output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
+    is_training = self.training
+    output["sigreg_loss"] = self.sigreg(emb.transpose(0, 1), validate=is_training)
     output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
+
+    if is_training and self.sigreg.comparison_active:
+        eager_total = output["pred_loss"] + lambd * self.sigreg.validation_eager_loss
+        metrics = compare_training_gradients(self, eager_total, output["loss"], cfg)
+        self.log_dict(metrics, on_step=True, on_epoch=False, sync_dist=False)
+        print(f"SIGReg training-step validation {self.sigreg.validation_calls}: {metrics}")
 
     if stage in ["validate", "val"]:
         losses_epoch = {f"validate_epoch/{k}_epoch": v.detach() for k, v in output.items() if "loss" in k}
@@ -98,6 +162,8 @@ def run(cfg):
     # Merge overrides from server back into cfg
     with open_dict(cfg):
         cfg.merge_with(cfg_dict)
+
+    configure_local_kernels(cfg)
 
     # Sync and update ClearML's Configuration tab named "OmegaConf" to reflect the actual resolved/merged config
     task.set_configuration_object("OmegaConf", OmegaConf.to_yaml(cfg))

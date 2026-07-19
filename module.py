@@ -1,7 +1,14 @@
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
 import torch
 from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
+
+SIGREG_KERNEL_REPO = "mlengineer-ai/sigreg-characteristic-statistic"
 
 def modulate(x, shift, scale):
     """AdaLN-zero modulation"""
@@ -10,9 +17,26 @@ def modulate(x, shift, scale):
 class SIGReg(torch.nn.Module):
     """Sketch Isotropic Gaussian Regularizer (single-GPU!)"""
 
-    def __init__(self, knots=17, num_proj=1024):
+    def __init__(
+        self,
+        knots=17,
+        num_proj=1024,
+        implementation="eager",
+        kernel_repo_id=SIGREG_KERNEL_REPO,
+        validation_steps=0,
+    ):
         super().__init__()
+        if implementation not in {"eager", "fused", "validate"}:
+            raise ValueError(f"Unknown SIGReg implementation: {implementation}")
         self.num_proj = num_proj
+        self.implementation = implementation
+        self.kernel_repo_id = kernel_repo_id
+        self.validation_steps = validation_steps
+        self.validation_calls = 0
+        self.comparison_active = False
+        self.validation_eager_loss = None
+        self._contract_reported = False
+        self._kernel = None
         t = torch.linspace(0, 3, knots, dtype=torch.float32)
         dt = 3 / (knots - 1)
         weights = torch.full((knots,), 2 * dt, dtype=torch.float32)
@@ -22,18 +46,87 @@ class SIGReg(torch.nn.Module):
         self.register_buffer("phi", window)
         self.register_buffer("weights", weights * window)
 
-    def forward(self, proj):
+    def _eager_statistic(self, y):
+        angles = y.float().unsqueeze(-1) * self.t
+        err = (angles.cos().mean(0) - self.phi).square() + angles.sin().mean(0).square()
+        return y.size(0) * (err * self.weights).sum() / (y.size(1) * y.size(2))
+
+    def _load_kernel(self):
+        if self._kernel is None:
+            overrides = dict(
+                entry.split("=", 1)
+                for entry in os.environ.get("LOCAL_KERNELS", "").split(os.pathsep)
+                if "=" in entry
+            )
+            kernel_path = Path(overrides.get(self.kernel_repo_id, ""))
+            init_path = kernel_path / "__init__.py"
+            if not init_path.is_file():
+                raise RuntimeError(
+                    f"No local SIGReg kernel package for {self.kernel_repo_id!r}; "
+                    f"expected {init_path}"
+                )
+            module_name = "lewm_sigreg_characteristic_statistic"
+            spec = importlib.util.spec_from_file_location(
+                module_name,
+                init_path,
+                submodule_search_locations=[str(kernel_path)],
+            )
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Cannot load local SIGReg kernel package from {init_path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            self._kernel = module
+        return self._kernel
+
+    def _validate_contract(self, y):
+        if y.ndim != 3:
+            raise RuntimeError(f"Projected SIGReg input must be (B,T,P), got {tuple(y.shape)}")
+        if not y.is_cuda or not y.is_contiguous():
+            raise RuntimeError("Projected SIGReg input must be a contiguous CUDA tensor")
+        if y.dtype not in {torch.float32, torch.float16, torch.bfloat16}:
+            raise RuntimeError(f"Unsupported projected SIGReg dtype: {y.dtype}")
+        for name in ("t", "phi", "weights"):
+            value = getattr(self, name)
+            if value.dtype != torch.float32 or not value.is_contiguous() or value.device != y.device:
+                raise RuntimeError(f"SIGReg buffer {name} must be contiguous FP32 on {y.device}")
+        if self.t[0].item() != 0.0 or self.phi[0].item() != 1.0:
+            raise RuntimeError("Configured SIGReg knot-zero invariant does not hold")
+        if not self._contract_reported:
+            kernel = self._load_kernel()
+            print(
+                "SIGReg kernel contract: "
+                f"y={tuple(y.shape)} {y.dtype} contiguous={y.is_contiguous()}, "
+                f"buffers={tuple(self.t.shape)} {self.t.dtype}, module={kernel.__file__}"
+            )
+            self._contract_reported = True
+
+    def forward(self, proj, validate=False):
         """
         proj: (T, B, D)
         """
         # sample random projections
         A = torch.randn(proj.size(-1), self.num_proj, device=proj.device, dtype=proj.dtype)
         A = A.div_(A.norm(p=2, dim=0))
-        # compute the epps-pulley statistic
-        x_t = (proj @ A).unsqueeze(-1) * self.t
-        err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
-        statistic = (err @ self.weights) * proj.size(-2)
-        return statistic.mean() # average over projections and time
+        y = (proj @ A).permute(1, 0, 2).contiguous()
+
+        self.comparison_active = False
+        self.validation_eager_loss = None
+        if self.implementation == "eager":
+            return self._eager_statistic(y)
+
+        self._validate_contract(y)
+        fused_loss = self._load_kernel().sigreg_statistic(y, self.t, self.phi, self.weights)
+        should_compare = (
+            self.implementation == "validate"
+            and validate
+            and self.validation_calls < self.validation_steps
+        )
+        if should_compare:
+            self.validation_eager_loss = self._eager_statistic(y)
+            self.comparison_active = True
+            self.validation_calls += 1
+        return fused_loss
     
 class FeedForward(nn.Module):
     """FeedForward network used in Transformers"""

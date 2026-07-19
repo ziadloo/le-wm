@@ -18,6 +18,16 @@ scheduler_type: LinearWarmupCosineAnnealingLR
 scheduler_interval: epoch
 epoch_interval: 1
 
+kernels:
+  sigreg:
+    repo_id: mlengineer-ai/sigreg-characteristic-statistic
+    release: v1
+    local_path: /home/mehran/.local/share/lewm-kernels/sigreg-characteristic-statistic/v1/build/torch212-cxx11-cu133-x86_64-linux
+    validation:
+      loss_atol: 1.0e-4
+      grad_atol: 1.0e-3
+      grad_rtol: 1.0e-2
+
 trainer:
   max_epochs: 100
   devices: auto
@@ -48,3 +58,6 @@ loss:
     kwargs:
       knots: 17
       num_proj: 1024
+      implementation: fused
+      kernel_repo_id: ${kernels.sigreg.repo_id}
+      validation_steps: 0

@@ -30,6 +30,34 @@ DEFAULT_EVAL_PACKAGES = DEFAULT_TRAIN_PACKAGES + ["imageio-ffmpeg"]
 
 # Presets map to decouple target task details from conditional structures
 PRESETS = {
+    "sigreg_validation": {
+        "project_name": "LeWM/Kernel Validation",
+        "task_name": "LeWM-SIGReg-v1-training-step-validation",
+        "task_type": Task.TaskTypes.training,
+        "script": "train.py",
+        "argparse_args": [("data", "pusht_lance")],
+        "config_path": "config/train/lewm.yaml",
+        "data_config_path": "config/train/data/pusht.yaml",
+        "dataset_name": "pusht_expert_train.lance",
+        "clearml_dataset_name": "LeWM-PushT",
+        "overrides": {
+            "trainer.max_epochs": 1,
+            "scheduler_max_epochs": 1,
+            "trainer.precision": "bf16-mixed",
+            "trainer.limit_train_batches": 5,
+            "trainer.limit_val_batches": 0,
+            "trainer.log_every_n_steps": 1,
+            "loader.batch_size": 144,
+            "loader.num_workers": 2,
+            "loader.persistent_workers": False,
+            "compile": True,
+            "epoch_interval": 1,
+            "loss.sigreg.kwargs.implementation": "validate",
+            "loss.sigreg.kwargs.validation_steps": 5,
+        },
+        "tags": ["kernel-validation", "sigreg", "v1", "pusht", "bf16-mixed"],
+        "packages": DEFAULT_TRAIN_PACKAGES,
+    },
     "tworoom": {
         "project_name": "LeWM/Training",
         "task_name": "LeWM-Train-tworoom-sigreg-bf16_mixed",
