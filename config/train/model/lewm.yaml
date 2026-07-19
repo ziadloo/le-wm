@@ -20,6 +20,8 @@ predictor:
   dim_head: 64
   dropout: 0.1
   emb_dropout: 0.0
+  dual_layernorm_adaln_implementation: eager
+  dual_layernorm_adaln_kernel_repo_id: ${kernels.predictor_dual_layernorm_adaln.repo_id}
 
 action_encoder:
   _target_: module.Embedder

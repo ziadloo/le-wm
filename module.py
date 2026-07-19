@@ -10,6 +10,26 @@ from einops import rearrange
 
 SIGREG_KERNEL_REPO = "mlengineer-ai/sigreg-characteristic-statistic"
 PROJECTION_NORMALIZATION_KERNEL_REPO = "mlengineer-ai/projection-column-normalization"
+PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO = "mlengineer-ai/predictor-dual-layernorm-adaln"
+_PREDICTOR_KERNEL = None
+
+def load_predictor_kernel(repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO):
+    global _PREDICTOR_KERNEL
+    if _PREDICTOR_KERNEL is not None:
+        return _PREDICTOR_KERNEL
+    overrides = dict(entry.split("=", 1) for entry in os.environ.get("LOCAL_KERNELS", "").split(os.pathsep) if "=" in entry)
+    kernel_path = Path(overrides.get(repo_id, "")); init_path = kernel_path / "__init__.py"
+    if not init_path.is_file():
+        raise RuntimeError(f"Fused predictor dual-LayerNorm AdaLN requested but artifact is unavailable: {init_path}")
+    module_name = "lewm_predictor_dual_layernorm_adaln"
+    if module_name in sys.modules:
+        _PREDICTOR_KERNEL = sys.modules[module_name]; return _PREDICTOR_KERNEL
+    spec = importlib.util.spec_from_file_location(module_name, init_path, submodule_search_locations=[str(kernel_path)])
+    if spec is None or spec.loader is None: raise RuntimeError(f"Cannot load predictor kernel from {init_path}")
+    module = importlib.util.module_from_spec(spec); sys.modules[module_name] = module
+    spec.loader.exec_module(module); _PREDICTOR_KERNEL = module
+    print(f"Loaded predictor dual-LayerNorm AdaLN ABI3 module from {module.__file__}")
+    return module
 
 def modulate(x, shift, scale):
     """AdaLN-zero modulation"""
@@ -247,6 +267,10 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+    def forward_pre_normalized(self, x):
+        for layer in self.net[1:]: x = layer(x)
+        return x
+
 
 class Attention(nn.Module):
     """Scaled dot-product attention with causal masking"""
@@ -272,6 +296,9 @@ class Attention(nn.Module):
         x : (B, T, D)
         """
         x = self.norm(x)
+        return self.forward_pre_normalized(x, causal=causal)
+
+    def forward_pre_normalized(self, x, causal=True):
         drop = self.dropout if self.training else 0.0
         qkv = self.to_qkv(x).chunk(3, dim=-1)  # q, k, v: (B, heads, T, dim_head)
         q, k, v = (rearrange(t, "b t (h d) -> b h t d", h=self.heads) for t in qkv)
@@ -283,7 +310,9 @@ class Attention(nn.Module):
 class ConditionalBlock(nn.Module):
     """Transformer block with AdaLN-zero conditioning"""
 
-    def __init__(self, dim, heads, dim_head, mlp_dim, dropout=0.0):
+    def __init__(self, dim, heads, dim_head, mlp_dim, dropout=0.0,
+                 dual_layernorm_adaln_implementation="eager",
+                 dual_layernorm_adaln_kernel_repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO):
         super().__init__()
 
         self.attn = Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
@@ -296,13 +325,35 @@ class ConditionalBlock(nn.Module):
 
         nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
+        if dual_layernorm_adaln_implementation not in {"eager", "fused", "validate"}:
+            raise ValueError(f"Unknown predictor dual-LayerNorm AdaLN implementation: {dual_layernorm_adaln_implementation}")
+        self.dual_layernorm_adaln_implementation = dual_layernorm_adaln_implementation
+        self.dual_layernorm_adaln_kernel_repo_id = dual_layernorm_adaln_kernel_repo_id
+        self.dual_layernorm_adaln_validation_records = []
+
+    def _fused_input(self, x, shift, scale, first_norm, second_norm):
+        return load_predictor_kernel(self.dual_layernorm_adaln_kernel_repo_id).dual_layernorm_adaln(
+            x, shift, scale, second_norm.weight, second_norm.bias, first_norm.eps, second_norm.eps)
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.adaLN_modulation(c).chunk(6, dim=-1)
         )
-        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        use_fused = self.dual_layernorm_adaln_implementation in {"fused", "validate"}
+        if use_fused:
+            attn_input = self._fused_input(x, shift_msa, scale_msa, self.norm1, self.attn.norm)
+            if self.dual_layernorm_adaln_implementation == "validate":
+                eager_attn_input = self.attn.norm(modulate(self.norm1(x), shift_msa, scale_msa))
+                self.dual_layernorm_adaln_validation_records.append((eager_attn_input, attn_input))
+            x = x + gate_msa * self.attn.forward_pre_normalized(attn_input)
+            mlp_input = self._fused_input(x, shift_mlp, scale_mlp, self.norm2, self.mlp.net[0])
+            if self.dual_layernorm_adaln_implementation == "validate":
+                eager_mlp_input = self.mlp.net[0](modulate(self.norm2(x), shift_mlp, scale_mlp))
+                self.dual_layernorm_adaln_validation_records.append((eager_mlp_input, mlp_input))
+            x = x + gate_mlp * self.mlp.forward_pre_normalized(mlp_input)
+        else:
+            x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+            x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
 
@@ -337,6 +388,8 @@ class Transformer(nn.Module):
         mlp_dim,
         dropout=0.0,
         block_class=Block,
+        dual_layernorm_adaln_implementation="eager",
+        dual_layernorm_adaln_kernel_repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO,
     ):
         super().__init__()
         self.norm = nn.LayerNorm(hidden_dim)
@@ -362,6 +415,10 @@ class Transformer(nn.Module):
 
         for _ in range(depth):
             self.layers.append(
+                block_class(hidden_dim, heads, dim_head, mlp_dim, dropout,
+                    dual_layernorm_adaln_implementation=dual_layernorm_adaln_implementation,
+                    dual_layernorm_adaln_kernel_repo_id=dual_layernorm_adaln_kernel_repo_id)
+                if block_class is ConditionalBlock else
                 block_class(hidden_dim, heads, dim_head, mlp_dim, dropout)
             )
 
@@ -452,6 +509,8 @@ class ARPredictor(nn.Module):
         dim_head=64,
         dropout=0.0,
         emb_dropout=0.0,
+        dual_layernorm_adaln_implementation="eager",
+        dual_layernorm_adaln_kernel_repo_id=PREDICTOR_DUAL_LAYERNORM_ADALN_KERNEL_REPO,
     ):
         super().__init__()
         self.pos_embedding = nn.Parameter(torch.randn(1, num_frames, input_dim))
@@ -466,7 +525,19 @@ class ARPredictor(nn.Module):
             mlp_dim,
             dropout,
             block_class=ConditionalBlock,
+            dual_layernorm_adaln_implementation=dual_layernorm_adaln_implementation,
+            dual_layernorm_adaln_kernel_repo_id=dual_layernorm_adaln_kernel_repo_id,
         )
+
+    def set_dual_layernorm_adaln_implementation(self, implementation):
+        if implementation not in {"eager", "fused", "validate"}: raise ValueError(implementation)
+        for block in self.transformer.layers: block.dual_layernorm_adaln_implementation = implementation
+
+    def clear_dual_layernorm_adaln_validation_records(self):
+        for block in self.transformer.layers: block.dual_layernorm_adaln_validation_records.clear()
+
+    def dual_layernorm_adaln_validation_records(self):
+        return [pair for block in self.transformer.layers for pair in block.dual_layernorm_adaln_validation_records]
 
     def forward(self, x, c):
         """

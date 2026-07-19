@@ -35,6 +35,16 @@ kernels:
       loss_atol: 6.0e-4
       grad_atol: 1.0e-3
       grad_rtol: 1.0e-2
+  predictor_dual_layernorm_adaln:
+    repo_id: mlengineer-ai/predictor-dual-layernorm-adaln
+    release: v1
+    local_path: /home/mehran/.local/share/lewm-kernels/predictor-dual-layernorm-adaln/v1/build/torch212-cxx11-cu133-x86_64-linux
+    validation:
+      output_atol: 8.0e-2
+      downstream_atol: 1.25e-1
+      loss_atol: 5.0e-3
+      grad_atol: 8.0e-2
+      grad_rtol: 2.0e-2
 
 trainer:
   max_epochs: 100
